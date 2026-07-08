@@ -1,0 +1,11 @@
+{
+  "name": "agentbar",
+  "description": "Answer Claude Code questions and permission prompts from the AgentBar macOS menu bar app. Installs hooks automatically — no configuration needed.",
+  "version": "0.1.0",
+  "author": {
+    "name": "jreed91"
+  },
+  "homepage": "https://github.com/jreed91/claude-notification",
+  "repository": "https://github.com/jreed91/claude-notification",
+  "keywords": ["macos", "menu-bar", "notifications", "hooks"]
+}

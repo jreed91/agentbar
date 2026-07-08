@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# agentbar-hook — bridge between Claude Code hooks and the AgentBar menu bar app.
+#
+# Usage: agentbar-hook <event>
+#   event: ask | permission | notify | stop
+#
+# Reads the hook payload from stdin, forwards it to AgentBar's local HTTP
+# server, and prints the server's response (hook JSON output) to stdout.
+#
+# Fail-open contract: if AgentBar is not installed, not running and cannot be
+# launched, times out, or errors in any way, this script exits 0 with no
+# output so the prompt falls back to the normal terminal experience.
+
+set -u
+
+EVENT="${1:-notify}"
+STATE_DIR="${HOME}/Library/Application Support/AgentBar"
+SERVER_FILE="${STATE_DIR}/server.json"
+BUNDLE_ID="com.jreed91.AgentBar"
+
+PORT=""
+TOKEN=""
+
+read_server_file() {
+  [ -f "$SERVER_FILE" ] || return 1
+  # server.json is written by AgentBar as: {"port":12345,"token":"hex"}
+  PORT="$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$SERVER_FILE")"
+  TOKEN="$(sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SERVER_FILE")"
+  [ -n "$PORT" ] && [ -n "$TOKEN" ]
+}
+
+server_alive() {
+  [ -n "$PORT" ] || return 1
+  curl -sf -m 2 -H "Authorization: Bearer ${TOKEN}" \
+    "http://127.0.0.1:${PORT}/v1/health" >/dev/null 2>&1
+}
+
+launch_app() {
+  open -g -b "$BUNDLE_ID" 2>/dev/null || open -g -a "AgentBar" 2>/dev/null
+}
+
+# Consume the payload first so we never leave Claude Code blocked on a full pipe.
+PAYLOAD="$(cat)"
+
+read_server_file || true
+if ! server_alive; then
+  launch_app || exit 0
+  # Wait up to ~5s for the app to boot and publish server.json.
+  i=0
+  while [ "$i" -lt 25 ]; do
+    sleep 0.2
+    if read_server_file && server_alive; then break; fi
+    i=$((i + 1))
+  done
+  server_alive || exit 0
+fi
+
+# Blocking events wait for the human; informational events return immediately.
+case "$EVENT" in
+  ask|permission) MAX_TIME=590 ;;
+  *)              MAX_TIME=5 ;;
+esac
+
+RESPONSE="$(curl -sf -m "$MAX_TIME" -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary "$PAYLOAD" \
+  "http://127.0.0.1:${PORT}/v1/${EVENT}")" || exit 0
+
+# The app returns either a complete hook-output JSON document, or an empty
+# body meaning "pass through to the terminal".
+if [ -n "$RESPONSE" ]; then
+  printf '%s' "$RESPONSE"
+fi
+exit 0
