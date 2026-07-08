@@ -35,7 +35,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let categoryID = "item-\(item.id.uuidString)"
         content.categoryIdentifier = categoryID
         content.userInfo = ["itemID": item.id.uuidString]
-        if playSoundEnabled() {
+        if Self.playSoundEnabled() {
             content.sound = .default
         }
 
@@ -121,11 +121,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         var options: UNNotificationPresentationOptions = [.banner]
-        // "playSound" defaults to true when unset.
-        let defaults = UserDefaults.standard
-        let sound = defaults.object(forKey: "playSound") == nil ? true : defaults.bool(forKey: "playSound")
-        if sound { options.insert(.sound) }
+        if Self.playSoundEnabled() { options.insert(.sound) }
         completionHandler(options)
+    }
+
+    /// "playSound" defaults to true when unset. Nonisolated so the delegate's
+    /// nonisolated callbacks can use it too.
+    private nonisolated static func playSoundEnabled() -> Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "playSound") == nil { return true }
+        return defaults.bool(forKey: "playSound")
     }
 
     nonisolated func userNotificationCenter(
