@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign, notarize & publish
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Releasing version ${VERSION}"
+
+      - name: Build release binary
+        run: swift build -c release --package-path app
+
+      - name: Assemble app bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/bundle.sh
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentbar-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$MACOS_CERT_P12" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+
+          # Make the temporary keychain visible to codesign.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          rm -f "$CERT_PATH"
+
+      - name: Codesign
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime \
+            --sign "$MACOS_SIGNING_IDENTITY" \
+            dist/AgentBar.app
+          codesign --verify --deep --strict --verbose=2 dist/AgentBar.app
+
+      - name: Zip bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ditto -c -k --keepParent dist/AgentBar.app "dist/AgentBar-${VERSION}.zip"
+
+      - name: Notarize & staple
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit "dist/AgentBar-${VERSION}.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple dist/AgentBar.app
+          # Re-zip so the published artifact contains the stapled ticket.
+          rm -f "dist/AgentBar-${VERSION}.zip"
+          ditto -c -k --keepParent dist/AgentBar.app "dist/AgentBar-${VERSION}.zip"
+
+      - name: Compute sha256
+        id: sha
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          SHA="$(shasum -a 256 "dist/AgentBar-${VERSION}.zip" | awk '{print $1}')"
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AgentBar-${{ steps.version.outputs.version }}.zip
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+
+      - name: Update cask on main
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch origin main
+          git checkout main
+          scripts/update-cask.sh "$VERSION" "$SHA256"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/agentbar.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up to date; nothing to commit."
+          else
+            git commit -m "Update cask to v${VERSION}"
+            git push origin main
+          fi

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Build app (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release --package-path app
+
+      - name: Bundle smoke test
+        env:
+          VERSION: 0.0.0-ci
+        run: scripts/bundle.sh
+
+  lint:
+    name: Lint scripts & JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: shellcheck
+        run: shellcheck plugin/bin/agentbar-hook scripts/*.sh
+
+      - name: Validate JSON
+        run: |
+          jq empty plugin/hooks/hooks.json
+          jq empty plugin/.claude-plugin/plugin.json
+          jq empty .claude-plugin/marketplace.json
