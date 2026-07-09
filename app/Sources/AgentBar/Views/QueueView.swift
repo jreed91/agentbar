@@ -5,7 +5,6 @@ import AppKit
 /// pending items grouped by session (labelled with the project directory), newest first.
 struct QueueView: View {
     @ObservedObject private var queue = AppState.shared.queue
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         // Let the window size itself to the content and cap only the scrollable
@@ -44,10 +43,6 @@ struct QueueView: View {
                     .foregroundStyle(.secondary)
             }
             Button {
-                // As an accessory (LSUIElement) app AgentBar is never the active
-                // app, so opening Settings alone leaves the window buried behind
-                // other apps. Activate first, then open, so it comes to the front.
-                NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             } label: {
                 Image(systemName: "gearshape")
@@ -140,5 +135,14 @@ struct QueueView: View {
     private func projectName(_ cwd: String) -> String {
         let name = URL(fileURLWithPath: cwd).lastPathComponent
         return name.isEmpty ? cwd : name
+    }
+
+    /// Opens the SwiftUI `Settings` scene window. As an accessory (LSUIElement)
+    /// app AgentBar is never the active app, so opening the window alone leaves
+    /// it buried behind other apps — activate first so it comes to the front.
+    /// The Settings scene installs the `showSettingsWindow:` action on macOS 13+.
+    private func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
