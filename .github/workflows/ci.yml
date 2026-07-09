@@ -37,3 +37,28 @@ jobs:
           jq empty plugin/hooks/hooks.json
           jq empty plugin/.claude-plugin/plugin.json
           jq empty .claude-plugin/marketplace.json
+
+  commitlint:
+    name: Lint commit messages
+    runs-on: ubuntu-latest
+    # Only pull requests carry a base/head range to lint. Pushes to main can
+    # include the semantic-release "chore(release):" commit, which we skip.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install commitlint
+        run: npm ci
+
+      - name: Validate PR commit messages
+        run: >
+          npx commitlint
+          --from "${{ github.event.pull_request.base.sha }}"
+          --to "${{ github.event.pull_request.head.sha }}"
+          --verbose

@@ -1,0 +1,17 @@
+{
+  "name": "agentbar-release",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Release and commit tooling for AgentBar (semantic-release + commitlint). The shipped app lives under app/; this manifest only carries the Node dev tooling for CI.",
+  "scripts": {
+    "release": "semantic-release",
+    "commitlint": "commitlint"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "semantic-release": "^24.2.1"
+  }
+}

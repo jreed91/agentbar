@@ -107,15 +107,39 @@ claude-notification/
 └── README.md
 ```
 
-## Releasing
+## Commits & releasing
 
-Push a semver tag; `release.yml` builds, signs, notarizes, publishes a GitHub Release,
-and commits the updated cask to `main`:
+Releases are **fully automated** from the commit history — there is no manual tag step.
 
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
+### Conventional Commits
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
+The type prefix drives the next version and the generated release notes:
+
+| Prefix | Example | Release effect |
+|---|---|---|
+| `fix:` | `fix: stop popover header from clipping` | patch (`0.3.0` → `0.3.1`) |
+| `feat:` | `feat: add per-session mute toggle` | minor (`0.3.0` → `0.4.0`) |
+| `feat!:` / `BREAKING CHANGE:` footer | `feat!: drop macOS 13 support` | major (`0.3.0` → `1.0.0`) |
+| `docs:`, `chore:`, `refactor:`, `test:`, `ci:`, `style:`, `perf:` | `chore: bump deps` | no release |
+
+The **Lint commit messages** CI job (commitlint) enforces this on every pull request, so
+non-conforming commits are caught before they reach `main`. Config lives in
+`commitlint.config.js`.
+
+### Automated releases
+
+On every push to `main`, `release.yml` runs [semantic-release](https://semantic-release.gitbook.io/):
+
+1. It analyzes the commits since the last `v*` tag and decides the next version (or exits
+   if nothing warrants a release).
+2. `scripts/release-build.sh` builds, signs, notarizes, and zips `AgentBar.app` for that
+   version and stamps `Casks/agentbar.rb`.
+3. semantic-release tags `vX.Y.Z`, publishes a GitHub Release with generated notes and the
+   zip asset, and commits the updated cask back to `main` (`chore(release): … [skip ci]`).
+
+No `settings.json` or tag pushing needed — merge a `fix:`/`feat:` PR and the release ships
+itself.
 
 Required repository secrets:
 
