@@ -5,6 +5,7 @@ import AppKit
 /// pending items grouped by session (labelled with the project directory), newest first.
 struct QueueView: View {
     @ObservedObject private var queue = AppState.shared.queue
+    @Environment(\.openSettings) private var openSettingsAction
 
     var body: some View {
         // Let the window size itself to the content and cap only the scrollable
@@ -144,9 +145,13 @@ struct QueueView: View {
     /// Opens the SwiftUI `Settings` scene window. As an accessory (LSUIElement)
     /// app AgentBar is never the active app, so opening the window alone leaves
     /// it buried behind other apps — activate first so it comes to the front.
-    /// The Settings scene installs the `showSettingsWindow:` action on macOS 13+.
+    ///
+    /// Uses the `openSettings` environment action (macOS 14+) rather than the
+    /// private `showSettingsWindow:`/`showPreferencesWindow:` selector, which
+    /// isn't reliably installed in the responder chain of a `MenuBarExtra`
+    /// accessory app and so silently no-ops.
     private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        openSettingsAction()
     }
 }
