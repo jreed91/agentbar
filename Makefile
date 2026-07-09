@@ -33,7 +33,7 @@ sign:
 		echo "       (for local unsigned dev builds use: make adhoc)"; \
 		exit 1; \
 	fi
-	codesign --force --deep --options runtime --sign "$(SIGNING_IDENTITY)" $(APP_BUNDLE)
+	codesign --force --deep --options runtime --timestamp --sign "$(SIGNING_IDENTITY)" $(APP_BUNDLE)
 
 # Ad-hoc signature ("-") for local development — no Developer ID needed.
 adhoc:

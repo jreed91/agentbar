@@ -62,7 +62,7 @@ jobs:
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
-          codesign --force --deep --options runtime \
+          codesign --force --deep --options runtime --timestamp \
             --sign "$MACOS_SIGNING_IDENTITY" \
             dist/AgentBar.app
           codesign --verify --deep --strict --verbose=2 dist/AgentBar.app
