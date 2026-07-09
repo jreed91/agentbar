@@ -9,7 +9,7 @@
 #       Info.plist        (from app/Support/Info.plist, version-stamped)
 #       PkgInfo           ("APPL????")
 #       MacOS/AgentBar    (the release executable)
-#       Resources/        (reserved for future assets)
+#       Resources/        (AppIcon.icns and future assets)
 #
 # Env:
 #   VERSION   marketing version stamped into CFBundleShortVersionString
@@ -49,6 +49,15 @@ cp "$BINARY" "${CONTENTS}/MacOS/${APP_NAME}"
 chmod +x "${CONTENTS}/MacOS/${APP_NAME}"
 
 cp "$PLIST_SRC" "${CONTENTS}/Info.plist"
+
+# App icon. CFBundleIconFile in Info.plist points at "AppIcon" → AppIcon.icns.
+ICON_SRC="${REPO_ROOT}/app/Support/AppIcon.icns"
+if [ -f "$ICON_SRC" ]; then
+  cp "$ICON_SRC" "${CONTENTS}/Resources/AppIcon.icns"
+else
+  echo "warning: ${ICON_SRC} not found; bundling without an app icon" >&2
+  echo "         regenerate it with: python3 scripts/generate-icon.py" >&2
+fi
 
 # Classic bundle signature.
 printf 'APPL????' > "${CONTENTS}/PkgInfo"

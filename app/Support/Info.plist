@@ -10,6 +10,10 @@
 	<string>AgentBar</string>
 	<key>CFBundleExecutable</key>
 	<string>AgentBar</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

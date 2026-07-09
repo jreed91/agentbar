@@ -14,12 +14,17 @@ DIST      := dist
 APP_BUNDLE := $(DIST)/$(APP_NAME).app
 ZIP        := $(DIST)/$(APP_NAME)-$(VERSION).zip
 
-.PHONY: all build bundle sign adhoc zip notarize install clean
+.PHONY: all build bundle sign adhoc zip notarize install clean icon
 
 all: bundle
 
 build:
 	swift build -c release --package-path app
+
+# Regenerate app/Support/AppIcon.icns from the pure-Python design source.
+# Only needed when the icon design changes; the .icns is committed.
+icon:
+	python3 scripts/generate-icon.py
 
 bundle: build
 	VERSION=$(VERSION) scripts/bundle.sh
