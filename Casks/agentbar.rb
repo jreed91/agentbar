@@ -7,7 +7,7 @@ cask "agentbar" do
   desc "Menu bar companion for Claude Code — answer agent prompts from the macOS menu bar"
   homepage "https://github.com/jreed91/claude-notification"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "AgentBar.app"
 
