@@ -183,14 +183,12 @@ final class HookServer {
     }
 
     private func dispatch(_ event: HookEvent, body: Data, connection: NWConnection) {
-        // Hop to the main actor for the queue; the connection is held open until it returns.
+        // Acknowledge immediately so the session never blocks, then enqueue the
+        // notification on the main actor. AgentBar is notify-only: there is no response
+        // to carry back, so the hook always sees an empty body (204) = terminal passthrough.
+        respond(connection, status: 204, body: "")
         Task { @MainActor in
-            let result = await AppState.shared.queue.submit(event: event, payload: body)
-            if let json = result {
-                self.respond(connection, status: 200, body: json, contentType: "application/json")
-            } else {
-                self.respond(connection, status: 204, body: "")
-            }
+            AppState.shared.queue.submit(event: event, payload: body)
         }
     }
 

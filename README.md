@@ -2,16 +2,16 @@
 
 A native macOS menu bar app plus a zero-config Claude Code plugin. When a Claude Code
 agent needs something from you — a multiple-choice question, a permission prompt, or it
-has gone idle waiting for input — AgentBar notifies you and, where the hook system
-allows, lets you answer directly from the menu bar or the notification banner, feeding
-your response back into the running session.
+has gone idle waiting for input — AgentBar notifies you and brings your terminal back to
+the front so you can answer there. It is a **notification tool, not an input tool**: it
+never blocks your session and never sits between you and Claude.
 
 ## How it works
 
 ```
 Claude Code session → plugin hook → AgentBar local server → menu bar / banner
-                                                                     │
-        session continues with your answer ◀── answer fed back ──────┘
+        │                              (returns immediately)
+        └── session continues; you answer the prompt in your terminal
 ```
 
 1. The plugin registers hooks across Claude Code's interaction points: questions
@@ -22,16 +22,16 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
    to AgentBar's local HTTP server (`127.0.0.1`, ephemeral port, per-launch bearer token
    published to `~/Library/Application Support/AgentBar/server.json`). It launches the
    app first if it is not already running.
-3. AgentBar queues the item, badges the menu bar icon, and posts an actionable
-   notification. You answer from the banner or the popover.
-4. For blocking events (questions, permissions), the server holds the HTTP request open
-   until you respond, then returns the hook-output JSON. The script prints it to stdout
-   and the agent continues with your answer.
+3. The server acknowledges immediately (fire-and-forget), so the hook returns at once and
+   your session is never blocked. AgentBar queues the item, badges the menu bar icon, and
+   posts a notification showing what Claude is asking.
+4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus
+   terminal" button in the popover) brings your terminal back to the front.
 
-**Fail-open contract:** if the app is missing, unreachable, errors, or you do not respond
-within the hook timeout (~10 minutes), the hook exits cleanly with no output and the
-prompt falls back to the normal terminal experience — exactly as if AgentBar were never
-installed. Every item also has an explicit "Answer in terminal" passthrough.
+**Fail-open contract:** the CLI always returns immediately. If the app is missing,
+unreachable, or errors in any way, the hook exits cleanly with no output — exactly as if
+AgentBar were never installed. Because AgentBar never returns a decision to Claude Code,
+every prompt is always answered in the terminal.
 
 ## Install
 
@@ -59,23 +59,25 @@ In Claude Code:
 
 The plugin's hooks activate automatically on install — no `settings.json` editing needed.
 
-## What you can answer from the menu bar
+## What AgentBar shows you
 
-| Event | What you can do | Why |
+Every event is a notification — AgentBar never intercepts or answers a prompt for you.
+
+| Event | What you see | What you do |
 |---|---|---|
-| **Question** (`AskUserQuestion`) | Pick an option or type a free-text reply | A blocking hook is in flight, so your answer can be fed back as the agent's answer. |
-| **Permission request** | Allow, or Deny with an optional message | A blocking hook can return an allow/deny decision to Claude Code. |
-| **MCP input request** (`Elicitation`) | Fill in the requested fields and Send, or Decline / Cancel | A blocking hook can return the form values (or a decline/cancel action) to the MCP server. |
-| **Idle / waiting** | Notify only — focuses your terminal | No hook can inject a new message into an idle session, so there is nothing to reply to. |
-| **Task finished** (`Stop`) | Notify only — focuses your terminal | Informational; the turn is already complete. |
-| **Subagent finished** (`SubagentStop`) | Notify only | Informational; a spawned subagent completed. |
-| **Session ended** (`SessionEnd`) | Notify only | Informational; the session closed. |
-| **Run interrupted** (`StopFailure`) | Notify only | Surfaces API errors such as rate limits, overload, or billing problems. |
+| **Question** (`AskUserQuestion`) | The question and its options, for context | Answer in the terminal; click to focus it |
+| **Permission request** | The tool and its input, so you know what Claude wants | Allow/deny in the terminal; click to focus it |
+| **MCP input request** (`Elicitation`) | The server's message and the fields it wants | Fill it in the terminal; click to focus it |
+| **Idle / waiting** | Claude is waiting for input | Click to focus the terminal |
+| **Task finished** (`Stop`) | The turn completed | Click to focus the terminal |
+| **Subagent finished** (`SubagentStop`) | A spawned subagent completed | — |
+| **Session ended** (`SessionEnd`) | The session closed | — |
+| **Run interrupted** (`StopFailure`) | Surfaces API errors such as rate limits, overload, or billing problems | — |
 
-Questions, permissions, and MCP input requests are interactive because a hook is blocking
-and can carry a response back. The rest are notify-only: the banner just brings your
-terminal back to the front. Every event has a toggle in Settings, so chatty ones (subagent
-and session-end in particular) can be muted individually.
+Questions, permissions, and MCP input requests stay in the popover (and badge the icon)
+until you dismiss them, since there is no reply channel back into the session to clear
+them automatically. The rest auto-expire. Every event has a toggle in Settings, so chatty
+ones (subagent and session-end in particular) can be muted individually.
 
 ## Development
 

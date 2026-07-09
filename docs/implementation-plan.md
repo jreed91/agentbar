@@ -2,11 +2,19 @@
 
 **AgentBar** is a native macOS menu bar app plus a zero-config Claude Code plugin. When a
 Claude Code agent needs something from you — a multiple-choice question, a permission
-prompt, or it's sitting idle waiting for input — AgentBar notifies you and (where the
-hook system allows) lets you respond directly from the menu bar or the notification
-banner, feeding your answer back into the running session.
+prompt, or it's sitting idle waiting for input — AgentBar notifies you and brings your
+terminal back to the front so you can answer there.
 
 This plan captures the decisions made during scoping and the full build-out.
+
+> **Design update — notify-only.** AgentBar started as a *blocking* bridge: the hook held
+> its HTTP request open until you answered in the menu bar, then fed that answer back to
+> Claude Code. That made AgentBar an input mechanism sitting between you and the CLI and
+> could stall a session. It is now **notify-only**: every hook is fire-and-forget, the
+> local server acknowledges immediately, and the session never blocks. AgentBar shows you
+> what Claude is asking and focuses your terminal; you always answer in the terminal.
+> Sections below that describe blocking behaviour and answer-feedback are retained for
+> historical context — the notes below mark where the current design differs.
 
 ---
 
@@ -90,15 +98,20 @@ respond in time — the hook exits 0 with no output and the prompt appears in th
 terminal as if AgentBar were never installed. The user can also explicitly click
 "Answer in terminal" (passthrough) on any item.
 
-### Local server protocol
+### Local server protocol (notify-only)
 
-| Route | Blocks? | Response body |
+Every route acknowledges immediately with an empty `204 No Content` — nothing blocks and
+no route ever returns a decision to Claude Code. The `POST` routes just enqueue a
+notification.
+
+| Route | Blocks? | Response |
 |---|---|---|
-| `GET /v1/health` | no | `ok` |
-| `POST /v1/ask` | yes | hook JSON (`PreToolUse` deny-with-answer) or empty = passthrough |
-| `POST /v1/permission` | yes | hook JSON (`PermissionRequest` allow/deny) or empty = passthrough |
-| `POST /v1/notify` | no | empty |
-| `POST /v1/stop` | no | empty |
+| `GET /v1/health` | no | `200 ok` |
+| `POST /v1/ask` | no | `204` (notification enqueued) |
+| `POST /v1/permission` | no | `204` (notification enqueued) |
+| `POST /v1/elicit` | no | `204` (notification enqueued) |
+| `POST /v1/notify` | no | `204` |
+| `POST /v1/stop` / `subagent` / `sessionend` / `stopfailure` | no | `204` |
 
 All routes require `Authorization: Bearer <token>`. The server binds 127.0.0.1 on an
 ephemeral port; port + token are regenerated each app launch.

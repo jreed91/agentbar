@@ -1,6 +1,5 @@
 import Foundation
 import UserNotifications
-import AppKit
 
 /// Wraps `UNUserNotificationCenter`: requests authorization, posts an actionable banner
 /// per pending item (registering a unique category so the banner can carry item-specific
@@ -42,7 +41,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.sound = .default
         }
 
-        let category = Self.buildCategory(id: categoryID, for: item.kind)
+        let category = Self.buildCategory(id: categoryID)
         let request = UNNotificationRequest(
             identifier: item.id.uuidString,
             content: content,
@@ -60,43 +59,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Builds the per-item category. Single-question asks with 1–3 options get one action
-    /// per option plus a text-input action; permissions get Allow/Deny; everything else
-    /// (multi-question or overflow) gets no actions and opens the app on default click.
-    private static func buildCategory(id: String, for kind: PendingItem.Kind) -> UNNotificationCategory {
-        var actions: [UNNotificationAction] = []
-
-        switch kind {
-        case .question(let questions):
-            if questions.count == 1,
-               let question = questions.first,
-               (1...3).contains(question.options.count) {
-                for (index, option) in question.options.enumerated() {
-                    actions.append(UNNotificationAction(
-                        identifier: "opt:\(index)",
-                        title: option.label,
-                        options: []
-                    ))
-                }
-                actions.append(UNTextInputNotificationAction(
-                    identifier: "text",
-                    title: "Type a reply…",
-                    options: [],
-                    textInputButtonTitle: "Send",
-                    textInputPlaceholder: "Your answer"
-                ))
-            }
-        case .permission:
-            actions.append(UNNotificationAction(identifier: "allow", title: "Allow", options: []))
-            actions.append(UNNotificationAction(identifier: "deny", title: "Deny", options: [.destructive]))
-        case .elicitation, .info:
-            // Elicitation forms are filled in the popover, not from the banner.
-            break
-        }
-
-        return UNNotificationCategory(
+    /// Builds the per-item category. AgentBar is notify-only, so banners carry no inline
+    /// reply actions — clicking one just brings your terminal back to the front so you can
+    /// answer there.
+    private static func buildCategory(id: String) -> UNNotificationCategory {
+        UNNotificationCategory(
             identifier: id,
-            actions: actions,
+            actions: [],
             intentIdentifiers: [],
             options: []
         )
@@ -158,67 +127,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private func handle(itemID: String?, actionID: String, userText: String?) {
         let queue = AppState.shared.queue
 
-        guard let itemID,
-              let uuid = UUID(uuidString: itemID),
-              let item = queue.items.first(where: { $0.id == uuid }) else {
-            activateApp()
-            return
-        }
+        let item = itemID
+            .flatMap { UUID(uuidString: $0) }
+            .flatMap { uuid in queue.items.first { $0.id == uuid } }
 
         switch actionID {
         case UNNotificationDefaultActionIdentifier:
-            // Default click: focus terminal for informational items, otherwise open the app.
-            if case .info = item.kind {
-                TerminalFocus.focus()
-            } else {
-                activateApp()
-            }
-
-        case UNNotificationDismissActionIdentifier:
-            if case .info = item.kind {
+            // Clicking the banner brings the terminal forward so you can answer there.
+            TerminalFocus.focus()
+            // Informational rows have served their purpose once seen; clear them.
+            if let item, case .info = item.kind {
                 queue.dismiss(item)
             }
 
-        case "allow":
-            queue.allowPermission(item: item)
-
-        case "deny":
-            queue.denyPermission(item: item, message: userText ?? "")
-
-        case "text":
-            if let text = userText,
-               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               case .question(let questions) = item.kind,
-               let question = questions.first {
-                let label = questionLabel(question)
-                queue.answerQuestion(item: item, answers: [(question: label, answer: text)])
-            } else {
-                activateApp()
+        case UNNotificationDismissActionIdentifier:
+            if let item {
+                queue.dismiss(item)
             }
 
         default:
-            if actionID.hasPrefix("opt:"),
-               case .question(let questions) = item.kind,
-               let question = questions.first,
-               let index = Int(actionID.dropFirst(4)),
-               index < question.options.count {
-                let label = questionLabel(question)
-                queue.answerQuestion(
-                    item: item,
-                    answers: [(question: label, answer: question.options[index].label)]
-                )
-            } else {
-                activateApp()
-            }
+            TerminalFocus.focus()
         }
-    }
-
-    private func questionLabel(_ question: AskQuestion) -> String {
-        if let header = question.header, !header.isEmpty { return header }
-        return question.question
-    }
-
-    private func activateApp() {
-        NSApp.activate(ignoringOtherApps: true)
     }
 }

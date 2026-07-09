@@ -3,12 +3,18 @@ import Combine
 
 /// The hook events AgentBar handles, matching the plugin's `agentbar-hook <event>`
 /// argument and the server routes `/v1/<event>`. The raw value is the route/token.
+///
+/// Every event is notify-only: the hook POSTs the payload and the server returns
+/// immediately, so the Claude Code session never blocks on AgentBar. Questions,
+/// permissions, and MCP input requests are surfaced with their full context so you
+/// know what's being asked, but you answer in the terminal — AgentBar just brings
+/// you back to it.
 enum HookEvent: String {
-    // Interactive (blocking — the held HTTP request carries a response back).
+    // Attention events — Claude is waiting on you in the terminal.
     case ask
     case permission
     case elicit
-    // Informational (notify-only — enqueue an auto-expiring row, return immediately).
+    // Informational events — nothing to act on.
     case notify
     case stop
     case subagentStop = "subagent"
@@ -179,9 +185,10 @@ struct HookPayload {
     }
 }
 
-/// A single item in the queue. Blocking kinds (`question`, `permission`) carry a
-/// continuation that is resumed exactly once with the finished hook-output JSON (or
-/// nil for passthrough). Informational kinds (`info`) have no continuation and expire.
+/// A single item in the queue. Nothing here blocks a session: every item is a
+/// notification. Attention kinds (`question`, `permission`, `elicitation`) surface what
+/// Claude is waiting on so you can answer in the terminal and drive the badge count;
+/// informational kinds (`info`) auto-expire.
 @MainActor
 final class PendingItem: Identifiable, ObservableObject {
     enum Kind {
@@ -197,9 +204,6 @@ final class PendingItem: Identifiable, ObservableObject {
     let createdAt: Date
     let kind: Kind
 
-    private var continuation: CheckedContinuation<String?, Never>?
-    private var didResume = false
-
     init(sessionID: String, cwd: String, kind: Kind) {
         self.id = UUID()
         self.sessionID = sessionID
@@ -208,30 +212,12 @@ final class PendingItem: Identifiable, ObservableObject {
         self.kind = kind
     }
 
-    /// True for items the user still has to respond to; drives the menu-bar badge count.
+    /// True for attention items (Claude is waiting on you in the terminal); drives the
+    /// menu-bar badge count. Informational items never count.
     var needsResponse: Bool {
         switch kind {
         case .question, .permission, .elicitation: return true
         case .info: return false
         }
-    }
-
-    /// Stores the continuation for a blocking item. Called synchronously inside
-    /// `withCheckedContinuation`, so it is always set before any resume can occur.
-    func attach(_ continuation: CheckedContinuation<String?, Never>) {
-        if didResume {
-            // Already resolved before we could attach (should not happen); resume now.
-            continuation.resume(returning: nil)
-            return
-        }
-        self.continuation = continuation
-    }
-
-    /// Resumes the held HTTP request exactly once. Extra calls are ignored.
-    func resume(with value: String?) {
-        guard !didResume else { return }
-        didResume = true
-        continuation?.resume(returning: value)
-        continuation = nil
     }
 }

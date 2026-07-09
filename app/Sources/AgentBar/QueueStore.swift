@@ -17,116 +17,101 @@ final class QueueStore: ObservableObject {
 
     // MARK: - Submission
 
-    /// Handles an incoming hook event. For blocking kinds it suspends until the user
-    /// resolves the item and returns the finished hook-output JSON (or nil = passthrough,
-    /// meaning an empty HTTP body and a terminal fallback). For informational kinds it
-    /// enqueues an auto-expiring row and returns nil immediately.
-    func submit(event: HookEvent, payload: Data) async -> String? {
+    /// Handles an incoming hook event. Never blocks the session: it enqueues a
+    /// notification row and returns immediately. Attention kinds (question, permission,
+    /// elicitation) persist until you dismiss them and drive the badge; informational
+    /// kinds auto-expire.
+    func submit(event: HookEvent, payload: Data) {
         let parsed = HookPayload(data: payload)
 
         switch event {
         case .ask:
-            guard settingEnabled("notifyQuestions") else { return nil }
+            guard settingEnabled("notifyQuestions") else { return }
             let questions = HookPayload.questions(from: parsed.toolInput)
-            guard !questions.isEmpty else { return nil }
-            let item = PendingItem(
+            guard !questions.isEmpty else { return }
+            enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .question(questions)
-            )
-            return await enqueueBlocking(item)
+            ))
 
         case .permission:
-            guard settingEnabled("notifyPermissions") else { return nil }
+            guard settingEnabled("notifyPermissions") else { return }
             let toolName = parsed.toolName ?? "Tool"
             let detail = HookPayload.prettyDetail(from: parsed.toolInput)
-            let item = PendingItem(
+            enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .permission(toolName: toolName, detail: detail)
-            )
-            return await enqueueBlocking(item)
-
-        case .notify:
-            guard settingEnabled("notifyIdle") else { return nil }
-            // Dedupe: suppress idle banners for sessions that already have a pending
-            // question or permission item (an unanswered prompt also fires Notification).
-            if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
-                return nil
-            }
-            let body = parsed.message ?? "Claude is waiting for your input."
-            let item = PendingItem(
-                sessionID: parsed.sessionID,
-                cwd: parsed.cwd,
-                kind: .info(title: "Waiting for input", body: body)
-            )
-            enqueueInfo(item)
-            return nil
-
-        case .stop:
-            guard settingEnabled("notifyTaskFinished") else { return nil }
-            let body = parsed.message ?? "Claude finished the current task."
-            let item = PendingItem(
-                sessionID: parsed.sessionID,
-                cwd: parsed.cwd,
-                kind: .info(title: "Task finished", body: body)
-            )
-            enqueueInfo(item)
-            return nil
+            ))
 
         case .elicit:
-            guard settingEnabled("notifyElicitations") else { return nil }
+            guard settingEnabled("notifyElicitations") else { return }
             let request = HookPayload.elicitation(from: parsed.raw)
-            let item = PendingItem(
+            enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .elicitation(request)
-            )
-            return await enqueueBlocking(item)
+            ))
+
+        case .notify:
+            guard settingEnabled("notifyIdle") else { return }
+            // Dedupe: suppress idle banners for sessions that already have a pending
+            // question or permission item (an unanswered prompt also fires Notification).
+            if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
+                return
+            }
+            let body = parsed.message ?? "Claude is waiting for your input."
+            enqueueInfo(PendingItem(
+                sessionID: parsed.sessionID,
+                cwd: parsed.cwd,
+                kind: .info(title: "Waiting for input", body: body)
+            ))
+
+        case .stop:
+            guard settingEnabled("notifyTaskFinished") else { return }
+            let body = parsed.message ?? "Claude finished the current task."
+            enqueueInfo(PendingItem(
+                sessionID: parsed.sessionID,
+                cwd: parsed.cwd,
+                kind: .info(title: "Task finished", body: body)
+            ))
 
         case .subagentStop:
-            guard settingEnabled("notifySubagent") else { return nil }
+            guard settingEnabled("notifySubagent") else { return }
             let body = parsed.lastAssistantMessage ?? parsed.message ?? "A subagent finished."
-            let item = PendingItem(
+            enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(title: "Subagent finished", body: body)
-            )
-            enqueueInfo(item)
-            return nil
+            ))
 
         case .sessionEnd:
-            guard settingEnabled("notifySessionEnd") else { return nil }
+            guard settingEnabled("notifySessionEnd") else { return }
             let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The Claude Code session ended."
-            let item = PendingItem(
+            enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(title: "Session ended", body: body)
-            )
-            enqueueInfo(item)
-            return nil
+            ))
 
         case .stopFailure:
-            guard settingEnabled("notifyErrors") else { return nil }
+            guard settingEnabled("notifyErrors") else { return }
             let detail = parsed.errorMessage ?? parsed.errorType ?? "The turn ended due to an error."
-            let item = PendingItem(
+            enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(title: "Claude run interrupted", body: detail)
-            )
-            enqueueInfo(item)
-            return nil
+            ))
         }
     }
 
-    private func enqueueBlocking(_ item: PendingItem) async -> String? {
+    /// Enqueues an attention item (Claude is waiting in the terminal). It stays until you
+    /// dismiss it — there is no reply channel back into the session, so nothing auto-clears
+    /// it, but it also never blocks the session.
+    private func enqueueAttention(_ item: PendingItem) {
         items.append(item)
-        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
-            item.attach(continuation)
-            // Post the notification only after the continuation is attached so a fast
-            // banner action can never race ahead of the suspension.
-            notificationManager?.post(for: item)
-        }
+        notificationManager?.post(for: item)
     }
 
     private func enqueueInfo(_ item: PendingItem) {
@@ -135,116 +120,22 @@ final class QueueStore: ObservableObject {
         scheduleExpiry(item)
     }
 
-    // MARK: - Resolution
+    // MARK: - Dismissal
 
-    /// Resolves an answered question as a `PreToolUse` deny-with-answer. `answers` pairs
-    /// each question's header/text with the chosen or typed answer.
-    func answerQuestion(item: PendingItem, answers: [(question: String, answer: String)]) {
-        let pairs = answers.map { "\($0.question): \($0.answer)" }.joined(separator: "; ")
-        let reason = "The user answered via the AgentBar menu bar app. \(pairs). Use these answers and continue — do not re-ask the user."
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Resolves a permission request by allowing it.
-    func allowPermission(item: PendingItem) {
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "PermissionRequest",
-                "decision": ["behavior": "allow"]
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Resolves a permission request by denying it, optionally with a reason message.
-    func denyPermission(item: PendingItem, message: String) {
-        var decision: [String: Any] = ["behavior": "deny"]
-        if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            decision["message"] = message
-        }
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "PermissionRequest",
-                "decision": decision
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Accepts an MCP elicitation, returning the collected field values as `content`.
-    func submitElicitation(item: PendingItem, content: [String: Any]) {
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "Elicitation",
-                "action": "accept",
-                "content": content
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Declines an MCP elicitation (the user refuses to provide the requested input).
-    func declineElicitation(item: PendingItem) {
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "Elicitation",
-                "action": "decline"
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Cancels an MCP elicitation (the user dismisses the request without deciding).
-    func cancelElicitation(item: PendingItem) {
-        let json = makeJSON([
-            "hookSpecificOutput": [
-                "hookEventName": "Elicitation",
-                "action": "cancel"
-            ]
-        ])
-        resolve(item, with: json)
-    }
-
-    /// Resolves a blocking item with an empty body, falling back to the terminal.
-    func passthrough(item: PendingItem) {
-        resolve(item, with: nil)
-    }
-
-    /// Removes an informational (or any) item without resuming a hook.
+    /// Removes an item from the queue and clears its banner. Used both by the user's
+    /// dismiss button and by the auto-expiry timer for informational rows.
     func dismiss(_ item: PendingItem) {
-        item.resume(with: nil)
         notificationManager?.remove(item)
         items.removeAll { $0.id == item.id }
     }
 
     // MARK: - Helpers
 
-    private func resolve(_ item: PendingItem, with json: String?) {
-        item.resume(with: json)
-        notificationManager?.remove(item)
-        items.removeAll { $0.id == item.id }
-    }
-
     private func scheduleExpiry(_ item: PendingItem, after seconds: Double = 25) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             self.dismiss(item)
         }
-    }
-
-    private func makeJSON(_ object: [String: Any]) -> String? {
-        guard let data = try? JSONSerialization.data(withJSONObject: object),
-              let string = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return string
     }
 
     /// UserDefaults toggles default to true when unset.
