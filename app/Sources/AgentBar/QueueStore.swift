@@ -1,11 +1,40 @@
 import Foundation
 import Combine
 
+/// One row in the popover's session list: a Claude Code session (discovered on disk) with
+/// any live hook events for it folded in. The roster comes from the transcript scan; live
+/// events overlay a fresher status, an ask line, and a terminal hint for "focus".
+struct SessionRow: Identifiable {
+    let id: String
+    let cwd: String
+    let title: String
+    let lastActivity: Date
+    let messageCount: Int
+    /// The session's current status: the loudest live event (permission > question >
+    /// working > error > done), or `.idle` when nothing is live.
+    let status: FeedStatus
+    /// Live hook events for this session, loudest first. Empty for a quiet/historical row.
+    let liveItems: [PendingItem]
+    /// Terminal/IDE hint from the live events, for a precise "focus"; nil falls back to a
+    /// priority scan.
+    let terminalHint: TerminalHint?
+    /// True when the session has recent hook activity (seen within `sessionTTL`) or a live
+    /// item right now — i.e. a terminal is plausibly still open on it.
+    let isLive: Bool
+}
+
 /// The source of truth for the popover and the menu-bar badge. All access is on the
 /// main actor; the HTTP server hops here via `Task { @MainActor in ... }`.
 @MainActor
 final class QueueStore: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
+
+    /// The Claude Code sessions discovered on disk, newest-first. Refreshed off the main
+    /// thread by `refreshSessions()`; merged with live `items` into `sessionRows`.
+    @Published private(set) var scannedSessions: [ClaudeSession] = []
+
+    private let scanner = SessionScanner()
+    private var isScanning = false
 
     /// Sessions AgentBar is watching, keyed by session id → the last time it sent any hook
     /// event. This is tracked independently of `items` so the "watching N sessions" readout
@@ -94,6 +123,105 @@ final class QueueStore: ObservableObject {
 
     private func countPhrase(_ n: Int, _ noun: String) -> String {
         "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+
+    // MARK: - Session roster (disk scan + live merge)
+
+    /// Kicks off a background scan of the transcript tree and republishes `scannedSessions`.
+    /// Single-flighted, so calling it on popover open and on a light interval is cheap — the
+    /// scanner itself only re-reads transcripts whose modification date changed.
+    func refreshSessions() {
+        guard !isScanning else { return }
+        isScanning = true
+        Task {
+            let sessions = await scanner.scan()
+            self.scannedSessions = sessions
+            self.isScanning = false
+        }
+    }
+
+    /// The popover's rows: every scanned session, plus any live session not yet on disk,
+    /// each with its live hook events folded in and sorted loudest-status-first.
+    var sessionRows: [SessionRow] {
+        let now = Date()
+
+        var liveBySession: [String: [PendingItem]] = [:]
+        for item in items where !item.sessionID.isEmpty {
+            liveBySession[item.sessionID, default: []].append(item)
+        }
+
+        var rows: [SessionRow] = []
+        var seen = Set<String>()
+
+        for session in scannedSessions {
+            seen.insert(session.id)
+            let live = sortedByLoudness(liveBySession[session.id] ?? [])
+            let liveLatest = live.map(\.createdAt).max() ?? .distantPast
+            rows.append(SessionRow(
+                id: session.id,
+                cwd: session.cwd,
+                title: session.title,
+                lastActivity: max(session.lastActivity, liveLatest),
+                messageCount: session.messageCount,
+                status: status(for: live),
+                liveItems: live,
+                terminalHint: live.compactMap(\.terminalHint).first,
+                isLive: isLive(session.id, now: now) || !live.isEmpty
+            ))
+        }
+
+        // Live sessions not (yet) on disk — brand-new, or beyond the scanner's recent cap.
+        // Synthesize a row so nothing waiting on you is ever hidden.
+        for (sessionID, itemsForSession) in liveBySession where !seen.contains(sessionID) {
+            let live = sortedByLoudness(itemsForSession)
+            rows.append(SessionRow(
+                id: sessionID,
+                cwd: live.first?.cwd ?? "",
+                title: live.first?.summaryLine ?? "Active session",
+                lastActivity: live.map(\.createdAt).max() ?? now,
+                messageCount: 0,
+                status: status(for: live),
+                liveItems: live,
+                terminalHint: live.compactMap(\.terminalHint).first,
+                isLive: true
+            ))
+        }
+
+        return rows.sorted { lhs, rhs in
+            let l = statusRank(lhs.status), r = statusRank(rhs.status)
+            if l != r { return l < r }
+            return lhs.lastActivity > rhs.lastActivity
+        }
+    }
+
+    /// Loudest live event wins the row's status; `.idle` when there is nothing live.
+    private func status(for live: [PendingItem]) -> FeedStatus {
+        for status in [FeedStatus.permission, .question, .working, .error, .done]
+        where live.contains(where: { $0.feedStatus == status }) {
+            return status
+        }
+        return .idle
+    }
+
+    /// Ordering for statuses: attention first, quiet last. Also orders the rows.
+    private func statusRank(_ status: FeedStatus) -> Int {
+        switch status {
+        case .permission: return 0
+        case .question: return 1
+        case .working: return 2
+        case .error: return 3
+        case .done: return 4
+        case .idle: return 5
+        }
+    }
+
+    private func sortedByLoudness(_ live: [PendingItem]) -> [PendingItem] {
+        live.sorted { statusRank($0.feedStatus) < statusRank($1.feedStatus) }
+    }
+
+    private func isLive(_ sessionID: String, now: Date) -> Bool {
+        guard let last = sessionsLastSeen[sessionID] else { return false }
+        return now.timeIntervalSince(last) < sessionTTL
     }
 
     // MARK: - Submission

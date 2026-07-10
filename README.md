@@ -87,6 +87,22 @@ beat after you respond in the terminal. You can also dismiss any item by hand. I
 rows auto-expire. Every event has a toggle in Settings, so chatty ones (subagent and
 session-end in particular) can be muted individually.
 
+## The session list
+
+The popover lists every Claude Code session on your machine, newest first. The roster is
+read straight from Claude Code's on-disk transcripts (`~/.claude/projects/**/*.jsonl`, or
+under `$CLAUDE_CONFIG_DIR`), so sessions show up even if they started before AgentBar was
+running or live in a terminal that never sent a hook. Each row shows the session's project,
+its first prompt as a title, a message count, and when it was last active; quiet sessions
+are tagged `IDLE`.
+
+Live hook events fold into the matching row by session id: a session waiting on a question
+or permission rises to the top, tags itself `QUESTION` / `PERMISSION`, and shows the prompt
+(and any command) inline with the same focus/dismiss keycaps. When you answer in the
+terminal, the row settles back to its resting state. The scan runs only while the popover is
+open — on open and on a light interval — and parses just the most recent sessions, caching
+by file modification date so repeat scans are nearly free.
+
 The popover is taller-adjustable — drag the handle on its bottom edge to grow it downward —
 and the height is remembered across launches.
 

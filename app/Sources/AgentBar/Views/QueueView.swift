@@ -29,10 +29,17 @@ struct QueueView: View {
 
     private let minHeight = 260.0, maxHeight = 820.0
 
-    /// One shared formatter for feed timestamps (HH:mm:ss).
+    /// One shared formatter for today's session timestamps (HH:mm:ss).
     private static let stamp: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    /// Short month/day formatter for sessions last active before today (e.g. "Jul 9").
+    private static let dayStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
         return f
     }()
 
@@ -44,7 +51,7 @@ struct QueueView: View {
             // dragging the popover taller enlarges the scrollable area (and grows downward,
             // since the popover is anchored under the icon at the top).
             Group {
-                if queue.items.isEmpty {
+                if queue.sessionRows.isEmpty {
                     emptyState
                 } else {
                     feed
@@ -54,6 +61,15 @@ struct QueueView: View {
             promptBar
         }
         .frame(width: popoverWidth, height: popoverHeight)
+        // Scan the transcript tree while the popover is open: once on appear, then on a
+        // light interval so a running session's status stays fresh. `.task` is cancelled on
+        // disappear, so nothing scans in the background when the popover is closed.
+        .task {
+            while !Task.isCancelled {
+                queue.refreshSessions()
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
         .background(Color.feedBG)
         .overlay(ScanlineOverlay())
         .overlay(
@@ -110,7 +126,7 @@ struct QueueView: View {
 
     private var titleBar: some View {
         HStack(spacing: 8) {
-            Text("claude-watch — \(queue.sessionCount) \(queue.sessionCount == 1 ? "session" : "sessions")")
+            Text("claude-watch — \(queue.sessionRows.count) \(queue.sessionRows.count == 1 ? "session" : "sessions")")
                 .font(feedFont(10.5))
                 .foregroundStyle(Color.feedSub)
                 .lineLimit(1)
@@ -171,9 +187,9 @@ struct QueueView: View {
     private var feed: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(sortedItems.enumerated()), id: \.element.id) { index, item in
+                ForEach(Array(queue.sessionRows.enumerated()), id: \.element.id) { index, row in
                     if index > 0 { DashedRule() }
-                    feedLine(item)
+                    sessionLine(row)
                 }
             }
             .padding(.horizontal, 12)
@@ -181,31 +197,36 @@ struct QueueView: View {
         }
     }
 
-    private var sortedItems: [PendingItem] {
-        queue.items.sorted { $0.createdAt > $1.createdAt }
-    }
-
+    /// One session row: its status, a title from the transcript, any live hook event folded
+    /// in (an ask line, a command box, focus/dismiss keycaps), and a message count. The
+    /// title is clickable to bring the session's terminal forward.
     @ViewBuilder
-    private func feedLine(_ item: PendingItem) -> some View {
+    private func sessionLine(_ row: SessionRow) -> some View {
+        let attention = row.liveItems.first { $0.needsResponse }
         VStack(alignment: .leading, spacing: 5) {
-            // Header row: timestamp · [project] · STATUS
+            // Header row: timestamp · [project] · STATUS · message count
             HStack(spacing: 6) {
-                Text(Self.stamp.string(from: item.createdAt))
+                Text(timeLabel(row.lastActivity))
                     .font(feedFont(10.5))
                     .foregroundStyle(Color.feedDim)
-                Text("[\(projectName(item.cwd))]")
+                Text("[\(projectName(row.cwd))]")
                     .font(feedFont(12, .semibold))
                     .foregroundStyle(Color.feedHead)
                     .lineLimit(1)
-                StatusTag(status: item.feedStatus)
+                StatusTag(status: row.status)
                 Spacer(minLength: 0)
+                if row.messageCount > 0 {
+                    Text("\(row.messageCount) msgs")
+                        .font(feedFont(10))
+                        .foregroundStyle(Color.feedDim)
+                }
             }
 
-            // The ask line — clickable to bring the terminal forward.
+            // The session's title (first prompt / summary) — clickable to focus its terminal.
             Button {
-                TerminalFocus.focus(hint: item.terminalHint)
+                TerminalFocus.focus(hint: row.terminalHint)
             } label: {
-                Text("└─ \(askText(item))")
+                Text("└─ \(row.title)")
                     .font(feedFont(11))
                     .foregroundStyle(Color.feedText)
                     .multilineTextAlignment(.leading)
@@ -214,41 +235,57 @@ struct QueueView: View {
             }
             .buttonStyle(.plain)
 
-            // Command box, for permissions that carry one.
-            if let command = commandText(item) {
-                Text("$ \(command)")
+            // A live hook event waiting on you in this session, if any.
+            if let attention {
+                Text("→ \(attention.summaryLine)")
                     .font(feedFont(11, .medium))
-                    .foregroundStyle(Color.feedAmberText)
-                    .lineLimit(5)
+                    .foregroundStyle(attention.feedStatus.color)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(Color.feedAmber.opacity(0.09))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.feedAmber.opacity(0.3), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                // Command box, for permissions that carry one.
+                if let command = commandText(attention) {
+                    Text("$ \(command)")
+                        .font(feedFont(11, .medium))
+                        .foregroundStyle(Color.feedAmberText)
+                        .lineLimit(5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.feedAmber.opacity(0.09))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.feedAmber.opacity(0.3), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
             }
 
-            actions(for: item)
+            actions(for: row, attention: attention)
         }
         .padding(.vertical, 8)
     }
 
+    /// Row actions. AgentBar is notify-only, so these focus the terminal or clear a live
+    /// prompt row — they never answer for you. Quiet sessions show only focus.
     @ViewBuilder
-    private func actions(for item: PendingItem) -> some View {
+    private func actions(for row: SessionRow, attention: PendingItem?) -> some View {
         HStack(spacing: 10) {
-            if item.needsResponse {
-                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: item.terminalHint) }
-                KeycapButton(key: "d", label: "dismiss", style: .deny) { queue.dismiss(item) }
-            } else {
-                KeycapButton(key: "d", label: "dismiss", style: .deny) { queue.dismiss(item) }
-                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: item.terminalHint) }
+            KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: row.terminalHint) }
+            if attention != nil {
+                KeycapButton(key: "d", label: "dismiss", style: .deny) { dismissLive(row) }
             }
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
+    }
+
+    /// Clears every live attention row for a session. There is no reply channel back into a
+    /// session, so this dismisses the notification once you have answered in the terminal.
+    private func dismissLive(_ row: SessionRow) {
+        for item in row.liveItems where item.needsResponse {
+            queue.dismiss(item)
+        }
     }
 
     // MARK: - Empty state
@@ -259,10 +296,10 @@ struct QueueView: View {
                 .font(feedFont(13, .bold))
                 .foregroundStyle(Color.feedGreen)
                 .shadow(color: Color.feedGreen.opacity(0.5), radius: 5)
-            Text("ALL CAUGHT UP")
+            Text("NO SESSIONS YET")
                 .font(feedFont(14, .bold))
                 .foregroundStyle(Color.feedHead)
-            Text("0 pending · standing by")
+            Text("start a Claude Code session · standing by")
                 .font(feedFont(11))
                 .foregroundStyle(Color.feedSub)
         }
@@ -288,19 +325,12 @@ struct QueueView: View {
 
     // MARK: - Item text helpers
 
-    private func askText(_ item: PendingItem) -> String {
-        switch item.kind {
-        case .question(let questions):
-            let first = questions.first?.question ?? "Claude has a question."
-            let extra = questions.count - 1
-            return extra > 0 ? "\(first) (+\(extra) more)" : first
-        case .permission(let toolName, _, _):
-            return "Wants to run \(toolName)"
-        case .elicitation(let request):
-            return request.message
-        case .info(_, _, let body):
-            return body
-        }
+    /// A compact time label for a session's last activity: the wall-clock time for today's
+    /// sessions, a short month/day for older ones.
+    private func timeLabel(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date)
+            ? Self.stamp.string(from: date)
+            : Self.dayStamp.string(from: date)
     }
 
     /// The `$` command box content: the shell command when present, otherwise the pretty
