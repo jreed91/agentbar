@@ -7,6 +7,16 @@ import Combine
 final class QueueStore: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
 
+    /// Sessions AgentBar is watching, keyed by session id → the last time it sent any hook
+    /// event. This is tracked independently of `items` so the "watching N sessions" readout
+    /// reflects live sessions even when nothing is pending; entries are dropped on
+    /// `SessionEnd` or after `sessionTTL` of silence.
+    @Published private var sessionsLastSeen: [String: Date] = [:]
+
+    /// A session with no hook activity for this long is treated as gone (covers terminals
+    /// closed without a clean `SessionEnd`).
+    private let sessionTTL: TimeInterval = 4 * 3600
+
     /// Set by `AppState` after construction. Weak because `AppState` owns both objects.
     weak var notificationManager: NotificationManager?
 
@@ -17,9 +27,10 @@ final class QueueStore: ObservableObject {
 
     // MARK: - Live-feed derived state
 
-    /// Distinct Claude Code sessions currently represented in the feed.
+    /// Number of Claude Code sessions currently being watched (seen within `sessionTTL`).
     var sessionCount: Int {
-        Set(items.map { $0.sessionID }).count
+        let now = Date()
+        return sessionsLastSeen.values.filter { now.timeIntervalSince($0) < sessionTTL }.count
     }
 
     /// Permission requests still awaiting you in the terminal.
@@ -91,8 +102,14 @@ final class QueueStore: ObservableObject {
     /// notification row and returns immediately. Attention kinds (question, permission,
     /// elicitation) persist until you dismiss them and drive the badge; informational
     /// kinds auto-expire.
-    func submit(event: HookEvent, payload: Data) {
+    func submit(event: HookEvent, payload: Data, hostBundleID: String? = nil) {
         let parsed = HookPayload(data: payload)
+
+        // Every event from a session counts as "watching" it, until it ends or goes quiet.
+        if !parsed.sessionID.isEmpty, event != .sessionEnd {
+            sessionsLastSeen[parsed.sessionID] = Date()
+            pruneSessions()
+        }
 
         switch event {
         case .ask:
@@ -102,7 +119,8 @@ final class QueueStore: ObservableObject {
             enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .question(questions)
+                kind: .question(questions),
+                hostBundleID: hostBundleID
             ))
 
         case .permission:
@@ -113,7 +131,8 @@ final class QueueStore: ObservableObject {
             enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .permission(toolName: toolName, command: command, detail: detail)
+                kind: .permission(toolName: toolName, command: command, detail: detail),
+                hostBundleID: hostBundleID
             ))
 
         case .elicit:
@@ -122,8 +141,23 @@ final class QueueStore: ObservableObject {
             enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .elicitation(request)
+                kind: .elicitation(request),
+                hostBundleID: hostBundleID
             ))
+
+        case .resolved:
+            // A tool completed — Claude can only run tools once you have answered whatever
+            // it was blocked on, so any pending prompt for this session was resolved in the
+            // terminal. Clear its attention rows (and their banners); Claude is now working.
+            clearAttention(for: parsed.sessionID)
+            if settingEnabled("notifyWorking"), !parsed.sessionID.isEmpty {
+                enqueueWorking(PendingItem(
+                    sessionID: parsed.sessionID,
+                    cwd: parsed.cwd,
+                    kind: .info(category: .working, title: "Working", body: "Thinking…"),
+                    hostBundleID: hostBundleID
+                ))
+            }
 
         case .working:
             guard settingEnabled("notifyWorking") else { return }
@@ -136,7 +170,8 @@ final class QueueStore: ObservableObject {
             enqueueWorking(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .working, title: "Working", body: "Thinking…")
+                kind: .info(category: .working, title: "Working", body: "Thinking…"),
+                hostBundleID: hostBundleID
             ))
 
         case .notify:
@@ -150,16 +185,20 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .working, title: "Waiting for input", body: body)
+                kind: .info(category: .working, title: "Waiting for input", body: body),
+                hostBundleID: hostBundleID
             ))
 
         case .stop:
+            // The turn ended, so any prompt you were shown for this session is resolved.
+            clearAttention(for: parsed.sessionID)
             guard settingEnabled("notifyTaskFinished") else { return }
             let body = parsed.message ?? "Claude finished the current task."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .done, title: "Task finished", body: body)
+                kind: .info(category: .done, title: "Task finished", body: body),
+                hostBundleID: hostBundleID
             ))
 
         case .subagentStop:
@@ -168,25 +207,32 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .done, title: "Subagent finished", body: body)
+                kind: .info(category: .done, title: "Subagent finished", body: body),
+                hostBundleID: hostBundleID
             ))
 
         case .sessionEnd:
+            // The session is gone: stop watching it and clear anything still pending.
+            clearAttention(for: parsed.sessionID)
+            sessionsLastSeen[parsed.sessionID] = nil
             guard settingEnabled("notifySessionEnd") else { return }
             let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The Claude Code session ended."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .done, title: "Session ended", body: body)
+                kind: .info(category: .done, title: "Session ended", body: body),
+                hostBundleID: hostBundleID
             ))
 
         case .stopFailure:
+            clearAttention(for: parsed.sessionID)
             guard settingEnabled("notifyErrors") else { return }
             let detail = parsed.errorMessage ?? parsed.errorType ?? "The turn ended due to an error."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .error, title: "Claude run interrupted", body: detail)
+                kind: .info(category: .error, title: "Claude run interrupted", body: detail),
+                hostBundleID: hostBundleID
             ))
         }
     }
@@ -231,6 +277,23 @@ final class QueueStore: ObservableObject {
             if case .info = item.kind { return true }
             return false
         }
+    }
+
+    /// Dismisses the pending attention rows (question / permission / MCP input) for a
+    /// session and clears their banners. Called when a prompt has been answered in the
+    /// terminal (a tool completed, or the turn ended), since there is no reply channel to
+    /// clear them otherwise. Informational status rows are left for their own lifecycle.
+    private func clearAttention(for sessionID: String) {
+        let resolved = items.filter { $0.sessionID == sessionID && $0.needsResponse }
+        for item in resolved { notificationManager?.remove(item) }
+        items.removeAll { item in resolved.contains { $0.id == item.id } }
+    }
+
+    /// Drops sessions that have gone silent past `sessionTTL` so the watch count does not
+    /// count terminals that were closed without a clean `SessionEnd`.
+    private func pruneSessions() {
+        let now = Date()
+        sessionsLastSeen = sessionsLastSeen.filter { now.timeIntervalSince($0.value) < sessionTTL }
     }
 
     // MARK: - Dismissal

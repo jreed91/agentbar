@@ -16,6 +16,9 @@ enum HookEvent: String {
     case elicit
     // Live-status event — Claude has started a turn and is thinking/working.
     case working
+    // Resolution event — a tool completed, so any prompt you were shown for this
+    // session has been answered in the terminal; its attention rows can clear.
+    case resolved
     // Informational events — nothing to act on.
     case notify
     case stop
@@ -266,13 +269,18 @@ final class PendingItem: Identifiable, ObservableObject {
     let cwd: String
     let createdAt: Date
     let kind: Kind
+    /// Bundle id of the app hosting the session's terminal (e.g. `com.jetbrains.WebStorm`),
+    /// captured from the hook environment. Focus prefers this so the right window comes
+    /// forward even when several terminals are open; nil falls back to a priority scan.
+    let hostBundleID: String?
 
-    init(sessionID: String, cwd: String, kind: Kind) {
+    init(sessionID: String, cwd: String, kind: Kind, hostBundleID: String? = nil) {
         self.id = UUID()
         self.sessionID = sessionID
         self.cwd = cwd
         self.createdAt = Date()
         self.kind = kind
+        self.hostBundleID = hostBundleID
     }
 
     /// True for attention items (Claude is waiting on you in the terminal); drives the

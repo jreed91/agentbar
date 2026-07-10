@@ -20,13 +20,37 @@ enum TerminalFocus {
         "com.jetbrains.rider"           // Rider
     ]
 
+    /// Brings a terminal / editor forward. When `preferred` names the app that actually
+    /// hosts the session (captured from the hook environment), that app is activated
+    /// directly — so the right window comes forward even when several terminals are open.
+    /// Falls back to the first running app in the priority list.
     @MainActor
-    static func focus() {
+    static func focus(preferred bundleID: String? = nil) {
+        if let bundleID, !bundleID.isEmpty,
+           let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            app.activate(options: [.activateAllWindows])
+            return
+        }
         for bundleID in bundleIDs {
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
                 app.activate(options: [.activateAllWindows])
                 return
             }
+        }
+    }
+
+    /// Maps a `TERM_PROGRAM` value (a coarse fallback when the host bundle id is absent)
+    /// to a bundle id. Ambiguous cases like VSCode/Cursor both reporting `vscode` are why
+    /// the hook prefers `__CFBundleIdentifier`; this is only a backstop.
+    static func bundleID(forTermProgram term: String?) -> String? {
+        switch term {
+        case "iTerm.app": return "com.googlecode.iterm2"
+        case "Apple_Terminal": return "com.apple.Terminal"
+        case "WarpTerminal": return "dev.warp.Warp-Stable"
+        case "ghostty": return "com.mitchellh.ghostty"
+        case "WezTerm": return "com.github.wez.wezterm"
+        case "vscode": return "com.microsoft.VSCode"
+        default: return nil
         }
     }
 }

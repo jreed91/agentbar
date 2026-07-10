@@ -158,39 +158,46 @@ final class HookServer {
             return
         }
 
+        // The app hosting the session's terminal, for a precise "Focus terminal": prefer
+        // the bundle id captured from the shell env, else map TERM_PROGRAM as a fallback.
+        let host = request.headers["x-agentbar-host"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? TerminalFocus.bundleID(forTermProgram: request.headers["x-agentbar-term"])
+
         switch (request.method, request.path) {
         case ("GET", "/v1/health"):
             respond(connection, status: 200, body: "ok")
         case ("POST", "/v1/ask"):
-            dispatch(.ask, body: request.body, connection: connection)
+            dispatch(.ask, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/permission"):
-            dispatch(.permission, body: request.body, connection: connection)
+            dispatch(.permission, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/elicit"):
-            dispatch(.elicit, body: request.body, connection: connection)
+            dispatch(.elicit, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/working"):
-            dispatch(.working, body: request.body, connection: connection)
+            dispatch(.working, body: request.body, host: host, connection: connection)
+        case ("POST", "/v1/resolved"):
+            dispatch(.resolved, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/notify"):
-            dispatch(.notify, body: request.body, connection: connection)
+            dispatch(.notify, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/stop"):
-            dispatch(.stop, body: request.body, connection: connection)
+            dispatch(.stop, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/subagent"):
-            dispatch(.subagentStop, body: request.body, connection: connection)
+            dispatch(.subagentStop, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/sessionend"):
-            dispatch(.sessionEnd, body: request.body, connection: connection)
+            dispatch(.sessionEnd, body: request.body, host: host, connection: connection)
         case ("POST", "/v1/stopfailure"):
-            dispatch(.stopFailure, body: request.body, connection: connection)
+            dispatch(.stopFailure, body: request.body, host: host, connection: connection)
         default:
             respond(connection, status: 404, body: "not found")
         }
     }
 
-    private func dispatch(_ event: HookEvent, body: Data, connection: NWConnection) {
+    private func dispatch(_ event: HookEvent, body: Data, host: String?, connection: NWConnection) {
         // Acknowledge immediately so the session never blocks, then enqueue the
         // notification on the main actor. AgentBar is notify-only: there is no response
         // to carry back, so the hook always sees an empty body (204) = terminal passthrough.
         respond(connection, status: 204, body: "")
         Task { @MainActor in
-            AppState.shared.queue.submit(event: event, payload: body)
+            AppState.shared.queue.submit(event: event, payload: body, hostBundleID: host)
         }
     }
 

@@ -35,6 +35,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/agentbar-hook\" resolved",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Elicitation": [
       {
         "matcher": "*",

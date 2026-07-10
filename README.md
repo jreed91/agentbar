@@ -16,9 +16,10 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
 
 1. The plugin registers hooks across Claude Code's interaction points: turn starts
    (`UserPromptSubmit`, surfaced as a live "thinking" status), questions
-   (`AskUserQuestion`), permission requests, MCP input requests (`Elicitation`), idle
-   notifications, and the task-finished / subagent-finished / session-ended /
-   run-interrupted (`Stop`, `SubagentStop`, `SessionEnd`, `StopFailure`) events.
+   (`AskUserQuestion`), permission requests, MCP input requests (`Elicitation`), tool
+   completions (`PostToolUse`, used to auto-clear a prompt once you answer it in the
+   terminal), idle notifications, and the task-finished / subagent-finished / session-ended
+   / run-interrupted (`Stop`, `SubagentStop`, `SessionEnd`, `StopFailure`) events.
 2. When one fires, the bundled `bin/agentbar-hook` script reads the payload and POSTs it
    to AgentBar's local HTTP server (`127.0.0.1`, ephemeral port, per-launch bearer token
    published to `~/Library/Application Support/AgentBar/server.json`). It launches the
@@ -26,8 +27,10 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
 3. The server acknowledges immediately (fire-and-forget), so the hook returns at once and
    your session is never blocked. AgentBar queues the item, badges the menu bar icon, and
    posts a notification showing what Claude is asking.
-4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus
-   terminal" button in the popover) brings your terminal back to the front.
+4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus"
+   button in the popover) brings the session's own terminal/IDE window back to the front.
+   Once you answer, AgentBar notices the session make progress (`PostToolUse` / `Stop`) and
+   clears the item automatically.
 
 **Fail-open contract:** the CLI always returns immediately. If the app is missing,
 unreachable, or errors in any way, the hook exits cleanly with no output — exactly as if
@@ -76,10 +79,16 @@ Every event is a notification — AgentBar never intercepts or answers a prompt 
 | **Session ended** (`SessionEnd`) | The session closed | — |
 | **Run interrupted** (`StopFailure`) | Surfaces API errors such as rate limits, overload, or billing problems | — |
 
-Questions, permissions, and MCP input requests stay in the popover (and badge the icon)
-until you dismiss them, since there is no reply channel back into the session to clear
-them automatically. The rest auto-expire. Every event has a toggle in Settings, so chatty
-ones (subagent and session-end in particular) can be muted individually.
+Questions, permissions, and MCP input requests badge the icon and stay in the popover
+until they're resolved. There is no reply channel back into the session, so AgentBar can't
+clear them the instant you answer — instead it watches for the session to make progress
+(the next tool run, or the turn finishing) and clears them then, which in practice is a
+beat after you respond in the terminal. You can also dismiss any item by hand. Informational
+rows auto-expire. Every event has a toggle in Settings, so chatty ones (subagent and
+session-end in particular) can be muted individually.
+
+The popover is resizable — drag the grip in its bottom-left corner — and its size is
+remembered across launches.
 
 ## Development
 

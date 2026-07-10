@@ -133,8 +133,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         switch actionID {
         case UNNotificationDefaultActionIdentifier:
-            // Clicking the banner brings the terminal forward so you can answer there.
-            TerminalFocus.focus()
+            // Clicking the banner brings the session's terminal forward to answer there.
+            TerminalFocus.focus(preferred: item?.hostBundleID)
             // Informational rows have served their purpose once seen; clear them.
             if let item, case .info = item.kind {
                 queue.dismiss(item)
@@ -146,7 +146,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             }
 
         default:
-            TerminalFocus.focus()
+            TerminalFocus.focus(preferred: item?.hostBundleID)
         }
     }
 }
