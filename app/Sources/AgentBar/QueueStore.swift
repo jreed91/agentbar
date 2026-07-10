@@ -102,7 +102,7 @@ final class QueueStore: ObservableObject {
     /// notification row and returns immediately. Attention kinds (question, permission,
     /// elicitation) persist until you dismiss them and drive the badge; informational
     /// kinds auto-expire.
-    func submit(event: HookEvent, payload: Data, hostBundleID: String? = nil) {
+    func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil) {
         let parsed = HookPayload(data: payload)
 
         // Every event from a session counts as "watching" it, until it ends or goes quiet.
@@ -120,7 +120,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .question(questions),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .permission:
@@ -132,7 +132,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .permission(toolName: toolName, command: command, detail: detail),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .elicit:
@@ -142,7 +142,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .elicitation(request),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .resolved:
@@ -155,7 +155,7 @@ final class QueueStore: ObservableObject {
                     sessionID: parsed.sessionID,
                     cwd: parsed.cwd,
                     kind: .info(category: .working, title: "Working", body: "Thinking…"),
-                    hostBundleID: hostBundleID
+                    terminalHint: terminal
                 ))
             }
 
@@ -171,7 +171,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .working, title: "Working", body: "Thinking…"),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .notify:
@@ -186,7 +186,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .working, title: "Waiting for input", body: body),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .stop:
@@ -198,7 +198,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Task finished", body: body),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .subagentStop:
@@ -208,7 +208,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Subagent finished", body: body),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .sessionEnd:
@@ -221,7 +221,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Session ended", body: body),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
 
         case .stopFailure:
@@ -232,7 +232,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .error, title: "Claude run interrupted", body: detail),
-                hostBundleID: hostBundleID
+                terminalHint: terminal
             ))
         }
     }

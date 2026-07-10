@@ -13,17 +13,16 @@ import AppKit
 struct QueueView: View {
     @ObservedObject private var queue = AppState.shared.queue
 
-    /// User-resizable popover dimensions, persisted across launches. Width applies to the
-    /// whole popover; height caps the scrollable feed.
-    @AppStorage("popoverWidth") private var popoverWidth = 340.0
-    @AppStorage("popoverFeedHeight") private var feedHeight = 290.0
+    /// The popover is a menu-bar popover: it stays centered under the icon, so width is
+    /// fixed (a centered popover can only grow symmetrically). Height is user-adjustable by
+    /// dragging the bottom edge and persists across launches; the popover grows downward.
+    private let popoverWidth = 340.0
+    @AppStorage("popoverHeight") private var popoverHeight = 460.0
 
-    /// Size at the start of a resize drag, so `translation` can be applied to a fixed base.
-    @State private var resizeBaseWidth: Double?
+    /// Height at the start of a resize drag, so `translation` applies to a fixed base.
     @State private var resizeBaseHeight: Double?
 
-    private let minWidth = 300.0, maxWidth = 620.0
-    private let minFeedHeight = 160.0, maxFeedHeight = 760.0
+    private let minHeight = 260.0, maxHeight = 820.0
 
     /// One shared formatter for feed timestamps (HH:mm:ss).
     private static let stamp: DateFormatter = {
@@ -36,14 +35,20 @@ struct QueueView: View {
         VStack(alignment: .leading, spacing: 0) {
             titleBar
             hero
-            if queue.items.isEmpty {
-                emptyState
-            } else {
-                feed
+            // The feed / empty state fills the space between the fixed hero and footer, so
+            // dragging the popover taller enlarges the scrollable area (and grows downward,
+            // since the popover is anchored under the icon at the top).
+            Group {
+                if queue.items.isEmpty {
+                    emptyState
+                } else {
+                    feed
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             promptBar
         }
-        .frame(width: popoverWidth)
+        .frame(width: popoverWidth, height: popoverHeight)
         .background(Color.feedBG)
         .overlay(ScanlineOverlay())
         .overlay(
@@ -51,40 +56,30 @@ struct QueueView: View {
                 .stroke(Color.feedGreen.opacity(0.4), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(alignment: .bottomLeading) { resizeGrip }
+        .overlay(alignment: .bottom) { bottomResizeHandle }
     }
 
-    // MARK: - Resize grip
+    // MARK: - Resize handle
 
-    /// A drag handle in the bottom-leading corner (the popover is anchored to the menu-bar
-    /// icon at the top-right, so this is the free corner). Dragging it resizes the popover
-    /// live; the size is persisted.
-    private var resizeGrip: some View {
-        ResizeGripShape()
-            .fill(Color.feedDim)
-            .frame(width: 12, height: 12)
-            .padding(6)
+    /// A drag handle on the bottom edge. The popover is anchored under the menu-bar icon, so
+    /// only height is adjustable — dragging down grows the popover downward. Persisted.
+    private var bottomResizeHandle: some View {
+        Capsule()
+            .fill(Color.feedDim.opacity(0.8))
+            .frame(width: 38, height: 4)
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
-                        if resizeBaseWidth == nil {
-                            resizeBaseWidth = popoverWidth
-                            resizeBaseHeight = feedHeight
-                        }
-                        let baseW = resizeBaseWidth ?? popoverWidth
-                        let baseH = resizeBaseHeight ?? feedHeight
-                        // Anchored top-right: dragging left widens, dragging down grows.
-                        popoverWidth = min(maxWidth, max(minWidth, baseW - value.translation.width))
-                        feedHeight = min(maxFeedHeight, max(minFeedHeight, baseH + value.translation.height))
+                        let base = resizeBaseHeight ?? popoverHeight
+                        if resizeBaseHeight == nil { resizeBaseHeight = base }
+                        popoverHeight = min(maxHeight, max(minHeight, base + value.translation.height))
                     }
-                    .onEnded { _ in
-                        resizeBaseWidth = nil
-                        resizeBaseHeight = nil
-                    }
+                    .onEnded { _ in resizeBaseHeight = nil }
             )
             .onHover { hovering in
-                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
             }
             .help("Drag to resize")
     }
@@ -93,7 +88,6 @@ struct QueueView: View {
 
     private var titleBar: some View {
         HStack(spacing: 8) {
-            TrafficDots()
             Text("claude-watch — \(queue.sessionCount) \(queue.sessionCount == 1 ? "session" : "sessions")")
                 .font(feedFont(10.5))
                 .foregroundStyle(Color.feedSub)
@@ -163,7 +157,6 @@ struct QueueView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 2)
         }
-        .frame(maxHeight: feedHeight)
     }
 
     private var sortedItems: [PendingItem] {
@@ -188,7 +181,7 @@ struct QueueView: View {
 
             // The ask line — clickable to bring the terminal forward.
             Button {
-                TerminalFocus.focus(preferred: item.hostBundleID)
+                TerminalFocus.focus(hint: item.terminalHint)
             } label: {
                 Text("└─ \(askText(item))")
                     .font(feedFont(11))
@@ -225,11 +218,11 @@ struct QueueView: View {
     private func actions(for item: PendingItem) -> some View {
         HStack(spacing: 10) {
             if item.needsResponse {
-                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(preferred: item.hostBundleID) }
+                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: item.terminalHint) }
                 KeycapButton(key: "d", label: "dismiss", style: .deny) { queue.dismiss(item) }
             } else {
                 KeycapButton(key: "d", label: "dismiss", style: .deny) { queue.dismiss(item) }
-                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(preferred: item.hostBundleID) }
+                KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: item.terminalHint) }
             }
             Spacer(minLength: 0)
         }

@@ -251,6 +251,24 @@ enum FeedMood {
     }
 }
 
+/// Clues about the terminal / IDE hosting a session, captured from the hook's shell
+/// environment. `termProgram` and `termEmulator` are set by the actual terminal that
+/// spawned the shell, so they are reliable; `cfBundleID` (`__CFBundleIdentifier`) reflects
+/// whatever *launched* the app and can be stale (e.g. `com.googlecode.iterm2` when an IDE
+/// was started from an iTerm shell), so it is only a last resort. Resolution happens in
+/// `TerminalFocus` at click time.
+struct TerminalHint: Sendable, Hashable {
+    let termProgram: String?
+    let termEmulator: String?
+    let cfBundleID: String?
+
+    var isEmpty: Bool {
+        (termProgram?.isEmpty ?? true)
+            && (termEmulator?.isEmpty ?? true)
+            && (cfBundleID?.isEmpty ?? true)
+    }
+}
+
 /// A single item in the queue. Nothing here blocks a session: every item is a
 /// notification. Attention kinds (`question`, `permission`, `elicitation`) surface what
 /// Claude is waiting on so you can answer in the terminal and drive the badge count;
@@ -269,18 +287,18 @@ final class PendingItem: Identifiable, ObservableObject {
     let cwd: String
     let createdAt: Date
     let kind: Kind
-    /// Bundle id of the app hosting the session's terminal (e.g. `com.jetbrains.WebStorm`),
-    /// captured from the hook environment. Focus prefers this so the right window comes
+    /// Clues about the terminal/IDE hosting the session, captured from the hook
+    /// environment. Focus resolves these to the right app so the correct window comes
     /// forward even when several terminals are open; nil falls back to a priority scan.
-    let hostBundleID: String?
+    let terminalHint: TerminalHint?
 
-    init(sessionID: String, cwd: String, kind: Kind, hostBundleID: String? = nil) {
+    init(sessionID: String, cwd: String, kind: Kind, terminalHint: TerminalHint? = nil) {
         self.id = UUID()
         self.sessionID = sessionID
         self.cwd = cwd
         self.createdAt = Date()
         self.kind = kind
-        self.hostBundleID = hostBundleID
+        self.terminalHint = terminalHint
     }
 
     /// True for attention items (Claude is waiting on you in the terminal); drives the

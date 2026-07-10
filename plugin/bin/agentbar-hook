@@ -58,20 +58,23 @@ if ! server_alive; then
   server_alive || exit 0
 fi
 
-# Best-effort host app for "Focus terminal": macOS sets __CFBundleIdentifier to the
-# bundle id of the app that launched this shell — the terminal or IDE hosting the
-# session (e.g. com.jetbrains.WebStorm, com.googlecode.iterm2) — which is exactly
-# the window AgentBar should bring forward. TERM_PROGRAM is a coarser fallback.
-HOST_BUNDLE="${__CFBundleIdentifier:-}"
+# Best-effort clues for "Focus terminal", in order of reliability. TERM_PROGRAM and
+# TERMINAL_EMULATOR are set by the actual terminal that spawned this shell (so a JetBrains
+# IDE reports TERMINAL_EMULATOR=JetBrains-JediTerm); __CFBundleIdentifier reflects whatever
+# *launched* the app and can be stale (e.g. iTerm's id when an IDE was started from a
+# shell), so the app treats it as a last resort.
 HOST_TERM="${TERM_PROGRAM:-}"
+HOST_TERMEMU="${TERMINAL_EMULATOR:-}"
+HOST_BUNDLE="${__CFBundleIdentifier:-}"
 
 # Fire-and-forget: the server acknowledges immediately (no body), so a short
 # timeout is plenty. We ignore the response — the prompt is answered in the terminal.
 curl -sf -m 5 -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -H "X-AgentBar-Host: ${HOST_BUNDLE}" \
   -H "X-AgentBar-Term: ${HOST_TERM}" \
+  -H "X-AgentBar-TermEmu: ${HOST_TERMEMU}" \
+  -H "X-AgentBar-Host: ${HOST_BUNDLE}" \
   --data-binary "$PAYLOAD" \
   "http://127.0.0.1:${PORT}/v1/${EVENT}" >/dev/null 2>&1 || exit 0
 
