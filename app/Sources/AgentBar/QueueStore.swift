@@ -46,6 +46,11 @@ final class QueueStore: ObservableObject {
     /// closed without a clean `SessionEnd`).
     private let sessionTTL: TimeInterval = 4 * 3600
 
+    /// When we have no live hook events for a session, a transcript written more recently
+    /// than this is taken as "still working" — Claude writes continuously while working and
+    /// goes quiet when waiting. Kept short so a finished session settles to idle quickly.
+    private let workingWindow: TimeInterval = 12
+
     /// Set by `AppState` after construction. Weak because `AppState` owns both objects.
     weak var notificationManager: NotificationManager?
 
@@ -157,16 +162,27 @@ final class QueueStore: ObservableObject {
             seen.insert(session.id)
             let live = sortedByLoudness(liveBySession[session.id] ?? [])
             let liveLatest = live.map(\.createdAt).max() ?? .distantPast
+            // Live hook events are authoritative. Only when we have none — e.g. AgentBar was
+            // started mid-turn and never caught this session's `working` hook — do we infer
+            // activity from the transcript: Claude writes to it continuously while working
+            // and goes quiet when waiting, so a very recent write means it is still working.
+            let fresh = live.isEmpty && now.timeIntervalSince(session.lastActivity) < workingWindow
+            let rowStatus: FeedStatus
+            if live.isEmpty {
+                rowStatus = fresh ? .working : .idle
+            } else {
+                rowStatus = status(for: live)
+            }
             rows.append(SessionRow(
                 id: session.id,
                 cwd: session.cwd,
                 title: session.title,
                 lastActivity: max(session.lastActivity, liveLatest),
                 messageCount: session.messageCount,
-                status: status(for: live),
+                status: rowStatus,
                 liveItems: live,
                 terminalHint: live.compactMap(\.terminalHint).first,
-                isLive: isLive(session.id, now: now) || !live.isEmpty
+                isLive: isLive(session.id, now: now) || !live.isEmpty || fresh
             ))
         }
 
@@ -187,19 +203,31 @@ final class QueueStore: ObservableObject {
             ))
         }
 
-        // One row per location: a project run many times collapses to just its most-recent
-        // session. A session with a live event has `lastActivity` bumped to now, so the
-        // active one naturally wins its location. Sessions with no cwd key on their id so
+        // One row per location: a project run many times collapses to a single row. Pick
+        // the representative by liveness first, so a running/working session is never hidden
+        // behind an idle sibling in the same directory that merely has a newer transcript;
+        // then by louder status, then by recency. Sessions with no cwd key on their id so
         // they are never merged together.
         var byLocation: [String: SessionRow] = [:]
         for row in rows {
             let key = row.cwd.isEmpty ? row.id : row.cwd
-            if let existing = byLocation[key], existing.lastActivity >= row.lastActivity { continue }
+            if let existing = byLocation[key], !prefer(row, over: existing) { continue }
             byLocation[key] = row
         }
 
         // Most recent first.
         return byLocation.values.sorted { $0.lastActivity > $1.lastActivity }
+    }
+
+    /// Which of two sessions competing for the same location should represent it: a live
+    /// session outranks a quiet one, then a louder status wins, then the more recent. This
+    /// keeps a working session visible even when an idle session in the same directory was
+    /// touched a moment more recently.
+    private func prefer(_ a: SessionRow, over b: SessionRow) -> Bool {
+        if a.isLive != b.isLive { return a.isLive }
+        let rankA = statusRank(a.status), rankB = statusRank(b.status)
+        if rankA != rankB { return rankA < rankB }
+        return a.lastActivity > b.lastActivity
     }
 
     /// Loudest live event wins the row's status; `.idle` when there is nothing live.
