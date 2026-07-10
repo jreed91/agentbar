@@ -87,8 +87,8 @@ beat after you respond in the terminal. You can also dismiss any item by hand. I
 rows auto-expire. Every event has a toggle in Settings, so chatty ones (subagent and
 session-end in particular) can be muted individually.
 
-The popover is resizable — drag the grip in its bottom-left corner — and its size is
-remembered across launches.
+The popover is taller-adjustable — drag the handle on its bottom edge to grow it downward —
+and the height is remembered across launches.
 
 ## Development
 

@@ -240,35 +240,3 @@ struct LiveBadge: View {
     }
 }
 
-/// A small triangular cluster of dots for the bottom-leading resize handle — more dots
-/// toward the corner, reading as a grip.
-struct ResizeGripShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let dot = 1.8
-        let step = 4.0
-        let cols = [rect.minX, rect.minX + step, rect.minX + 2 * step]
-        let rows = [rect.maxY - 2 * step, rect.maxY - step, rect.maxY]
-        for (rowIndex, y) in rows.enumerated() {
-            for x in cols.prefix(rowIndex + 1) {
-                path.addEllipse(in: CGRect(x: x, y: y - dot, width: dot, height: dot))
-            }
-        }
-        return path
-    }
-}
-
-/// The three faux traffic-light dots used in the title bar.
-struct TrafficDots: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            dot(Color(red: 255 / 255, green: 95 / 255, blue: 86 / 255))   // #ff5f56
-            dot(Color(red: 255 / 255, green: 189 / 255, blue: 46 / 255))  // #ffbd2e
-            dot(Color(red: 39 / 255, green: 201 / 255, blue: 63 / 255))   // #27c93f
-        }
-    }
-
-    private func dot(_ color: Color) -> some View {
-        Circle().fill(color).frame(width: 9, height: 9)
-    }
-}
