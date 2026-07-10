@@ -170,6 +170,15 @@ struct HookPayload {
         }
     }
 
+    /// Pulls a concise shell command out of a `tool_input`, when present. Bash-style tool
+    /// calls carry `{"command": "..."}`; the live feed shows this in its `$` box. Returns
+    /// nil for tools without a command, so the view can fall back to the full detail.
+    static func command(from toolInput: [String: Any]?) -> String? {
+        guard let command = toolInput?["command"] as? String else { return nil }
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// Pretty-prints a `tool_input` dictionary as the detail string shown for permissions.
     static func prettyDetail(from toolInput: [String: Any]?) -> String {
         guard let toolInput else { return "" }
@@ -185,6 +194,58 @@ struct HookPayload {
     }
 }
 
+/// The category behind an informational (`.info`) row. Drives the feed's status tag and
+/// mascot mood: idle/waiting reads as "working", finished/ended reads as "done", and a
+/// failed turn reads as "error".
+enum InfoCategory {
+    case working
+    case done
+    case error
+}
+
+/// The status a feed line renders with — the live-feed design (2a) tags every row with one
+/// of these and derives its mascot mood from the set of active statuses. This is a pure,
+/// UI-free classification; the view maps it to colors and labels.
+enum FeedStatus: Equatable {
+    case permission
+    case question
+    case working
+    case done
+    case error
+}
+
+/// The mascot's mood in the live feed. Each mood has a compact face for the menu bar and a
+/// boxed ASCII face for the popover hero, mirroring the design's `asciiMini` / `asciiBig`.
+enum FeedMood {
+    case happy
+    case working
+    case question
+    case permission
+    case done
+
+    /// Compact face for the menu-bar label (design `asciiMini`).
+    var miniFace: String {
+        switch self {
+        case .happy: return "^_^"
+        case .working: return "o_o"
+        case .question: return "o_O"
+        case .permission: return "O_O"
+        case .done: return "^‿^"
+        }
+    }
+
+    /// Boxed ASCII face for the popover hero (design `asciiBig`).
+    var bigFace: String {
+        switch self {
+        case .happy:      return "┌─────────┐\n│  ^   ^  │\n│    ‿    │\n└─────────┘"
+        case .working:    return "┌─────────┐\n│  -   -  │\n│   ───   │\n└─────────┘"
+        case .question:   return "┌─────────┐\n│  o   O  │\n│    ?    │\n└─────────┘"
+        case .permission: return "┌─────────┐\n│  O   O  │\n│    o    │\n└─────────┘"
+        case .done:       return "┌─────────┐\n│  ^   ^  │\n│   \\_/   │\n└─────────┘"
+        }
+    }
+}
+
 /// A single item in the queue. Nothing here blocks a session: every item is a
 /// notification. Attention kinds (`question`, `permission`, `elicitation`) surface what
 /// Claude is waiting on so you can answer in the terminal and drive the badge count;
@@ -193,9 +254,9 @@ struct HookPayload {
 final class PendingItem: Identifiable, ObservableObject {
     enum Kind {
         case question([AskQuestion])
-        case permission(toolName: String, detail: String)
+        case permission(toolName: String, command: String?, detail: String)
         case elicitation(ElicitationRequest)
-        case info(title: String, body: String)
+        case info(category: InfoCategory, title: String, body: String)
     }
 
     let id: UUID
@@ -218,6 +279,22 @@ final class PendingItem: Identifiable, ObservableObject {
         switch kind {
         case .question, .permission, .elicitation: return true
         case .info: return false
+        }
+    }
+
+    /// How this item is tagged in the live feed. Elicitations read as questions — both
+    /// route you to the terminal to type an answer.
+    var feedStatus: FeedStatus {
+        switch kind {
+        case .question: return .question
+        case .permission: return .permission
+        case .elicitation: return .question
+        case .info(let category, _, _):
+            switch category {
+            case .working: return .working
+            case .done: return .done
+            case .error: return .error
+            }
         }
     }
 }

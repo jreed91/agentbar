@@ -12,8 +12,11 @@ struct AgentBarApp: App {
             QueueView()
                 .environmentObject(AppState.shared)
         } label: {
+            // The design puts an ASCII mascot in the menu bar whose face tracks the
+            // queue's mood; the pending count trails it when something needs you.
             let count = queue.pendingCount
-            Image(systemName: count > 0 ? "bell.badge.fill" : "bell")
+            Text(queue.menuBarFace)
+                .font(.system(size: 12, design: .monospaced))
             if count > 0 {
                 Text("\(count)")
             }

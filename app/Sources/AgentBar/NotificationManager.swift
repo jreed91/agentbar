@@ -23,13 +23,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case .question(let questions):
             content.title = "Question from Claude"
             content.body = questions.first?.question ?? "Claude has a question."
-        case .permission(let toolName, _):
+        case .permission(let toolName, _, _):
             content.title = "Permission request"
             content.body = "Claude wants to use \(toolName)."
         case .elicitation(let request):
             content.title = "Claude needs input"
             content.body = request.message
-        case .info(let title, let body):
+        case .info(_, let title, let body):
             content.title = title
             content.body = body
         }

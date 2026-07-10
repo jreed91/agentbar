@@ -15,6 +15,76 @@ final class QueueStore: ObservableObject {
         items.filter { $0.needsResponse }.count
     }
 
+    // MARK: - Live-feed derived state
+
+    /// Distinct Claude Code sessions currently represented in the feed.
+    var sessionCount: Int {
+        Set(items.map { $0.sessionID }).count
+    }
+
+    /// Permission requests still awaiting you in the terminal.
+    var pendingPermissions: Int {
+        items.filter { $0.feedStatus == .permission }.count
+    }
+
+    /// Questions / MCP input requests still awaiting you in the terminal.
+    var pendingQuestions: Int {
+        items.filter { $0.feedStatus == .question }.count
+    }
+
+    /// The overall mascot mood, in priority order: permission out-shouts a question, which
+    /// out-shouts background work, which out-shouts a finished task, and an empty queue is
+    /// happy. Mirrors the design's per-scenario mood.
+    var mood: FeedMood {
+        if items.isEmpty { return .happy }
+        if pendingPermissions > 0 { return .permission }
+        if pendingQuestions > 0 { return .question }
+        if items.contains(where: { $0.feedStatus == .working }) { return .working }
+        return .done
+    }
+
+    /// The ASCII face shown in the menu-bar label (design `asciiMini`).
+    var menuBarFace: String { mood.miniFace }
+
+    /// The hero headline in the popover — a short summary of what, if anything, needs you.
+    var headline: String {
+        let permissions = pendingPermissions
+        let questions = pendingQuestions
+        let pending = permissions + questions
+        if pending > 0 {
+            if permissions > 0 && questions > 0 {
+                return "\(pending) things need you"
+            } else if permissions > 0 {
+                return permissions == 1 ? "Permission needed" : "\(permissions) permissions need you"
+            } else {
+                return questions == 1 ? "Claude has a question" : "\(questions) questions waiting"
+            }
+        }
+        if items.contains(where: { $0.feedStatus == .working }) { return "Claude's on it" }
+        return "Task complete"
+    }
+
+    /// The hero subline — a one-line breakdown under the headline.
+    var subline: String {
+        let permissions = pendingPermissions
+        let questions = pendingQuestions
+        if permissions > 0 && questions > 0 {
+            return "\(countPhrase(permissions, "permission")) · \(countPhrase(questions, "question"))"
+        } else if permissions > 0 {
+            return permissions == 1 ? "Claude wants to run a command." : "\(permissions) commands need approval."
+        } else if questions > 0 {
+            return questions == 1 ? "One session is waiting on your answer." : "\(questions) sessions are waiting on you."
+        }
+        if items.contains(where: { $0.feedStatus == .working }) {
+            return "Working — nothing needs you yet."
+        }
+        return "Recent activity below."
+    }
+
+    private func countPhrase(_ n: Int, _ noun: String) -> String {
+        "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+
     // MARK: - Submission
 
     /// Handles an incoming hook event. Never blocks the session: it enqueues a
@@ -38,11 +108,12 @@ final class QueueStore: ObservableObject {
         case .permission:
             guard settingEnabled("notifyPermissions") else { return }
             let toolName = parsed.toolName ?? "Tool"
+            let command = HookPayload.command(from: parsed.toolInput)
             let detail = HookPayload.prettyDetail(from: parsed.toolInput)
             enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .permission(toolName: toolName, detail: detail)
+                kind: .permission(toolName: toolName, command: command, detail: detail)
             ))
 
         case .elicit:
@@ -65,7 +136,7 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(title: "Waiting for input", body: body)
+                kind: .info(category: .working, title: "Waiting for input", body: body)
             ))
 
         case .stop:
@@ -74,7 +145,7 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(title: "Task finished", body: body)
+                kind: .info(category: .done, title: "Task finished", body: body)
             ))
 
         case .subagentStop:
@@ -83,7 +154,7 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(title: "Subagent finished", body: body)
+                kind: .info(category: .done, title: "Subagent finished", body: body)
             ))
 
         case .sessionEnd:
@@ -92,7 +163,7 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(title: "Session ended", body: body)
+                kind: .info(category: .done, title: "Session ended", body: body)
             ))
 
         case .stopFailure:
@@ -101,7 +172,7 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(title: "Claude run interrupted", body: detail)
+                kind: .info(category: .error, title: "Claude run interrupted", body: detail)
             ))
         }
     }

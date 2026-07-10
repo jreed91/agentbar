@@ -2,9 +2,9 @@
 """Generate the AgentBar app icon — no third-party dependencies.
 
 This script is the source of truth for the app icon. It rasterizes the design
-(a graphite squircle with a white notification bell and a Claude-coral badge,
-echoing the app's menu-bar `bell.badge.fill` glyph) at every size macOS needs
-and packs them into a PNG-based `.icns`.
+(a dark-green phosphor-terminal squircle with a glowing green mascot face and
+faint CRT scanlines, echoing the "Live feed" popover) at every size macOS
+needs and packs them into a PNG-based `.icns`.
 
 Usage:
     python3 scripts/generate-icon.py [OUT_ICNS] [--png OUT_1024_PNG]
@@ -19,11 +19,12 @@ import struct
 import sys
 import zlib
 
-# ---- palette -------------------------------------------------------------
-GRAD_TOP    = (0x3B, 0x3E, 0x46)   # graphite, light
-GRAD_BOTTOM = (0x18, 0x19, 0x1D)   # graphite, dark
-BELL        = (0xF6, 0xF6, 0xF8)   # near-white
-BADGE       = (0xD9, 0x77, 0x57)   # Claude coral
+# ---- palette (the phosphor terminal from design 2a) ----------------------
+WALL_TOP = (0x12, 0x30, 0x24)   # #123024 terminal green, top
+WALL_MID = (0x0c, 0x22, 0x1a)   # #0c221a mid stop (~60%)
+WALL_BOT = (0x08, 0x16, 0x0f)   # #08160f terminal green, bottom
+FACE     = (0x46, 0xe0, 0x7f)   # #46e07f bright phosphor green (eyes + smile)
+GLOW     = (0x8a, 0xff, 0xb0)   # #8affb0 lighter phosphor, used for the bloom
 
 
 def lerp(a, b, t):
@@ -31,21 +32,30 @@ def lerp(a, b, t):
 
 
 def grad(ny):
-    return tuple(lerp(GRAD_TOP[i], GRAD_BOTTOM[i], ny) / 255.0 for i in range(3))
+    """Three-stop vertical terminal gradient (top → mid@0.6 → bottom)."""
+    if ny < 0.6:
+        t = ny / 0.6
+        c = tuple(lerp(WALL_TOP[i], WALL_MID[i], t) for i in range(3))
+    else:
+        t = (ny - 0.6) / 0.4
+        c = tuple(lerp(WALL_MID[i], WALL_BOT[i], t) for i in range(3))
+    return tuple(v / 255.0 for v in c)
 
 
 # ---- geometry (normalized 0..1 canvas, y down) ---------------------------
-MARGIN = 0.055
+MARGIN = 0.06
 HW = 0.5 - MARGIN            # squircle half-width
 SQ_N = 5.0                   # superellipse exponent (squircle)
 
-DOME_C, DOME_R = (0.5, 0.435), 0.205
-FLARE_Y0, FLARE_Y1 = 0.435, 0.665
-FLARE_W0, FLARE_W1 = 0.205, 0.285
-RIM_Y, RIM_HALF, RIM_R = 0.665, 0.285, 0.033
-KNOB_C, KNOB_R = (0.5, 0.205), 0.05
-CLAP_C, CLAP_R = (0.5, 0.745), 0.052
-BADGE_C, BADGE_R, RING_R = (0.70, 0.305), 0.108, 0.150
+# Mascot face — two round eyes over a U-shaped (bottom-arc) smile.
+EYE_L, EYE_R_C = (0.375, 0.42), (0.625, 0.42)
+EYE_R = 0.052
+MOUTH_C = (0.5, 0.40)       # smile is the lower arc of a ring centered here
+MOUTH_R_IN, MOUTH_R_OUT = 0.17, 0.216
+MOUTH_DROP = 0.055          # how far below center the smile begins (trims the sides)
+
+FACE_CENTER = (0.5, 0.46)   # source of the phosphor bloom
+RIM_START = 0.86            # squircle "s" value where the edge glow ramps in
 
 
 def inside_circle(x, y, c, r):
@@ -53,46 +63,56 @@ def inside_circle(x, y, c, r):
     return dx * dx + dy * dy <= r * r
 
 
-def inside_squircle(x, y):
+def squircle_s(x, y):
     u = abs((x - 0.5) / HW)
     v = abs((y - 0.5) / HW)
-    return (u ** SQ_N + v ** SQ_N) <= 1.0
+    return u ** SQ_N + v ** SQ_N
 
 
-def inside_bell(x, y):
-    if inside_circle(x, y, DOME_C, DOME_R):
-        return True
-    if inside_circle(x, y, KNOB_C, KNOB_R):
-        return True
-    if inside_circle(x, y, CLAP_C, CLAP_R):
-        return True
-    if FLARE_Y0 <= y <= FLARE_Y1:
-        t = (y - FLARE_Y0) / (FLARE_Y1 - FLARE_Y0)
-        if abs(x - 0.5) <= lerp(FLARE_W0, FLARE_W1, t):
-            return True
-    dx = abs(x - 0.5)
-    if dx <= RIM_HALF:
-        if abs(y - RIM_Y) <= RIM_R:
-            return True
-    else:
-        ex = 0.5 + (RIM_HALF if x > 0.5 else -RIM_HALF)
-        if inside_circle(x, y, (ex, RIM_Y), RIM_R):
-            return True
-    return False
+def inside_smile(x, y):
+    dx, dy = x - MOUTH_C[0], y - MOUTH_C[1]
+    if dy <= MOUTH_DROP:            # keep only the lower arc → a smile, not a ring
+        return False
+    d = math.hypot(dx, dy)
+    return MOUTH_R_IN <= d <= MOUTH_R_OUT
+
+
+def inside_face(x, y):
+    return (inside_circle(x, y, EYE_L, EYE_R)
+            or inside_circle(x, y, EYE_R_C, EYE_R)
+            or inside_smile(x, y))
 
 
 def color_at(x, y):
     """Return (r, g, b, a) floats in 0..1 for a normalized point."""
-    if not inside_squircle(x, y):
+    s = squircle_s(x, y)
+    if s > 1.0:
         return (0.0, 0.0, 0.0, 0.0)
+
     r, g, b = grad(y)
-    if inside_bell(x, y):
-        r, g, b = (c / 255.0 for c in BELL)
-    # Separation ring: recolor the gap around the badge back to the background.
-    if inside_circle(x, y, BADGE_C, RING_R) and not inside_circle(x, y, BADGE_C, BADGE_R):
-        r, g, b = grad(y)
-    if inside_circle(x, y, BADGE_C, BADGE_R):
-        r, g, b = (c / 255.0 for c in BADGE)
+
+    # Faint CRT scanlines: darken in a fine horizontal band pattern.
+    scan = 1.0 - 0.05 * (0.5 + 0.5 * math.cos(y * 2.0 * math.pi * 20.0))
+    r, g, b = r * scan, g * scan, b * scan
+
+    # Phosphor bloom: a soft green glow radiating from the face center.
+    dfc = math.hypot(x - FACE_CENTER[0], y - FACE_CENTER[1])
+    bloom = max(0.0, 1.0 - dfc / 0.46) ** 2 * 0.16
+    r = min(1.0, r + GLOW[0] / 255.0 * bloom)
+    g = min(1.0, g + GLOW[1] / 255.0 * bloom)
+    b = min(1.0, b + GLOW[2] / 255.0 * bloom)
+
+    # Edge glow: a bright green rim hugging the squircle border.
+    if s >= RIM_START:
+        t = min(1.0, (s - RIM_START) / (1.0 - RIM_START))
+        r = lerp(r, FACE[0] / 255.0, t * 0.7)
+        g = lerp(g, FACE[1] / 255.0, t * 0.7)
+        b = lerp(b, FACE[2] / 255.0, t * 0.7)
+
+    # The mascot face, on top of everything.
+    if inside_face(x, y):
+        r, g, b = (c / 255.0 for c in FACE)
+
     return (r, g, b, 1.0)
 
 
