@@ -22,6 +22,11 @@ struct QueueView: View {
     /// Height at the start of a resize drag, so `translation` applies to a fixed base.
     @State private var resizeBaseHeight: Double?
 
+    /// The popover's pinned top edge (screen coords). MenuBarExtra keeps the window's
+    /// bottom-left origin fixed on resize, so without this the top drifts from the menu bar
+    /// when the popover shrinks. Captured on open, reset when it closes.
+    @State private var anchorTop: CGFloat?
+
     private let minHeight = 260.0, maxHeight = 820.0
 
     /// One shared formatter for feed timestamps (HH:mm:ss).
@@ -57,6 +62,23 @@ struct QueueView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .bottom) { bottomResizeHandle }
+        .background(WindowReader(trigger: popoverHeight) { window in
+            pinTop(of: window)
+        })
+        .onDisappear { anchorTop = nil }
+    }
+
+    /// Keeps the popover's top edge under the menu-bar icon as its height changes: capture
+    /// the top on first sight, then hold `maxY` constant by adjusting the window origin.
+    private func pinTop(of window: NSWindow) {
+        guard window.isVisible, window.frame.height > 1 else { return }
+        if anchorTop == nil { anchorTop = window.frame.maxY }
+        guard let top = anchorTop else { return }
+        let frame = window.frame
+        let targetY = top - frame.height
+        if abs(frame.origin.y - targetY) > 0.5 {
+            window.setFrameOrigin(NSPoint(x: frame.origin.x, y: targetY))
+        }
     }
 
     // MARK: - Resize handle
@@ -292,5 +314,23 @@ struct QueueView: View {
     private func projectName(_ cwd: String) -> String {
         let name = URL(fileURLWithPath: cwd).lastPathComponent
         return name.isEmpty ? cwd : name
+    }
+}
+
+/// Exposes the hosting `NSWindow` so the popover can pin its own top edge. `trigger` is a
+/// value that changes when we need `updateNSView` to re-run (the popover height); the window
+/// lookup is deferred to the next runloop tick so the frame reflects the new content size.
+private struct WindowReader: NSViewRepresentable {
+    let trigger: Double
+    let onLayout: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let onLayout = self.onLayout
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            onLayout(window)
+        }
     }
 }
