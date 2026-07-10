@@ -217,6 +217,9 @@ enum FeedStatus: Equatable {
     case working
     case done
     case error
+    /// A session that is on disk but has no live hook activity right now — historical or
+    /// simply quiet. Only ever a session-row status; `PendingItem` never reports it.
+    case idle
 }
 
 /// The mascot's mood in the live feed. Each mood has a compact face for the menu bar and a
@@ -307,6 +310,23 @@ final class PendingItem: Identifiable, ObservableObject {
         switch kind {
         case .question, .permission, .elicitation: return true
         case .info: return false
+        }
+    }
+
+    /// A one-line human summary of what this item is — used as the ask line in a session
+    /// row, and as a fallback session title for a live session not yet scanned from disk.
+    var summaryLine: String {
+        switch kind {
+        case .question(let questions):
+            let first = questions.first?.question ?? "Claude has a question."
+            let extra = questions.count - 1
+            return extra > 0 ? "\(first) (+\(extra) more)" : first
+        case .permission(let toolName, _, _):
+            return "Wants to run \(toolName)"
+        case .elicitation(let request):
+            return request.message
+        case .info(_, _, let body):
+            return body
         }
     }
 

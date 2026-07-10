@@ -57,6 +57,7 @@ extension FeedStatus {
         case .working: return "WORKING"
         case .done: return "DONE"
         case .error: return "ERROR"
+        case .idle: return "IDLE"
         }
     }
 
@@ -67,6 +68,7 @@ extension FeedStatus {
         case .question: return .stQuestion
         case .working: return .stWorking
         case .done: return .stDone
+        case .idle: return .feedDim
         }
     }
 }
