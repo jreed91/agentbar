@@ -14,6 +14,8 @@ enum HookEvent: String {
     case ask
     case permission
     case elicit
+    // Live-status event — Claude has started a turn and is thinking/working.
+    case working
     // Informational events — nothing to act on.
     case notify
     case stop

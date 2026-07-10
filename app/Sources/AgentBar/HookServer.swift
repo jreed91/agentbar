@@ -167,6 +167,8 @@ final class HookServer {
             dispatch(.permission, body: request.body, connection: connection)
         case ("POST", "/v1/elicit"):
             dispatch(.elicit, body: request.body, connection: connection)
+        case ("POST", "/v1/working"):
+            dispatch(.working, body: request.body, connection: connection)
         case ("POST", "/v1/notify"):
             dispatch(.notify, body: request.body, connection: connection)
         case ("POST", "/v1/stop"):

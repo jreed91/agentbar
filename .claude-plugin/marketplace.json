@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Menu bar companion for Claude Code — answer agent questions and permission prompts from the macOS menu bar",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "agentbar",
       "source": "./plugin",
-      "description": "Routes Claude Code questions, permission prompts, idle alerts, and task-finished events to the AgentBar menu bar app, and feeds your answers back into the session.",
-      "version": "0.1.0",
+      "description": "Routes Claude Code's live thinking status, questions, permission prompts, idle alerts, and task-finished events to the AgentBar menu bar app.",
+      "version": "0.2.0",
       "author": {
         "name": "jreed91"
       }

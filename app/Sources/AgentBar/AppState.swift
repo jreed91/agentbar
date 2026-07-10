@@ -31,6 +31,7 @@ final class AppState: ObservableObject {
             "notifyQuestions": true,
             "notifyPermissions": true,
             "notifyElicitations": true,
+            "notifyWorking": true,
             "notifyIdle": true,
             "notifyTaskFinished": true,
             "notifySubagent": true,

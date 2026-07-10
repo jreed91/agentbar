@@ -14,7 +14,8 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
         └── session continues; you answer the prompt in your terminal
 ```
 
-1. The plugin registers hooks across Claude Code's interaction points: questions
+1. The plugin registers hooks across Claude Code's interaction points: turn starts
+   (`UserPromptSubmit`, surfaced as a live "thinking" status), questions
    (`AskUserQuestion`), permission requests, MCP input requests (`Elicitation`), idle
    notifications, and the task-finished / subagent-finished / session-ended /
    run-interrupted (`Stop`, `SubagentStop`, `SessionEnd`, `StopFailure`) events.
@@ -65,6 +66,7 @@ Every event is a notification — AgentBar never intercepts or answers a prompt 
 
 | Event | What you see | What you do |
 |---|---|---|
+| **Thinking** (`UserPromptSubmit`) | A live "working" status while Claude is on a turn (no banner) | Nothing — it clears itself when the turn ends |
 | **Question** (`AskUserQuestion`) | The question and its options, for context | Answer in the terminal; click to focus it |
 | **Permission request** | The tool and its input, so you know what Claude wants | Allow/deny in the terminal; click to focus it |
 | **MCP input request** (`Elicitation`) | The server's message and the fields it wants | Fill it in the terminal; click to focus it |

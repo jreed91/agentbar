@@ -125,6 +125,20 @@ final class QueueStore: ObservableObject {
                 kind: .elicitation(request)
             ))
 
+        case .working:
+            guard settingEnabled("notifyWorking") else { return }
+            // A turn just started — Claude is thinking, not waiting. Skip the working row
+            // for a session that already has something waiting on you (question/permission);
+            // otherwise show a single live WORKING row, replacing any prior status.
+            if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
+                return
+            }
+            enqueueWorking(PendingItem(
+                sessionID: parsed.sessionID,
+                cwd: parsed.cwd,
+                kind: .info(category: .working, title: "Working", body: "Thinking…")
+            ))
+
         case .notify:
             guard settingEnabled("notifyIdle") else { return }
             // Dedupe: suppress idle banners for sessions that already have a pending
@@ -179,16 +193,44 @@ final class QueueStore: ObservableObject {
 
     /// Enqueues an attention item (Claude is waiting in the terminal). It stays until you
     /// dismiss it — there is no reply channel back into the session, so nothing auto-clears
-    /// it, but it also never blocks the session.
+    /// it, but it also never blocks the session. Claude is now waiting rather than thinking,
+    /// so any live status row for the session is superseded.
     private func enqueueAttention(_ item: PendingItem) {
+        clearStatusRows(for: item.sessionID)
         items.append(item)
         notificationManager?.post(for: item)
     }
 
     private func enqueueInfo(_ item: PendingItem) {
+        // At most one lifecycle/status row per session: a finished/idle/error status
+        // supersedes the "thinking" row from the same turn.
+        clearStatusRows(for: item.sessionID)
         items.append(item)
         notificationManager?.post(for: item)
         scheduleExpiry(item)
+    }
+
+    /// Enqueues the live "Claude is thinking" status row. Unlike other rows it posts no
+    /// banner and never auto-expires — it is cleared when the turn ends (a finished/error
+    /// status arrives) or when Claude starts waiting on you. Replaces any prior status.
+    private func enqueueWorking(_ item: PendingItem) {
+        clearStatusRows(for: item.sessionID)
+        items.append(item)
+    }
+
+    /// Removes the informational (`.info`) status rows for a session so at most one is ever
+    /// present — working → idle → finished → error each supersede the last. Attention rows
+    /// (questions, permissions, MCP input) are left untouched. Any delivered banner for a
+    /// removed row is cleared too.
+    private func clearStatusRows(for sessionID: String) {
+        for item in items where item.sessionID == sessionID {
+            if case .info = item.kind { notificationManager?.remove(item) }
+        }
+        items.removeAll { item in
+            guard item.sessionID == sessionID else { return false }
+            if case .info = item.kind { return true }
+            return false
+        }
     }
 
     // MARK: - Dismissal

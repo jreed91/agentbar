@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("notifyQuestions") private var notifyQuestions = true
     @AppStorage("notifyPermissions") private var notifyPermissions = true
     @AppStorage("notifyElicitations") private var notifyElicitations = true
+    @AppStorage("notifyWorking") private var notifyWorking = true
     @AppStorage("notifyIdle") private var notifyIdle = true
     @AppStorage("notifyTaskFinished") private var notifyTaskFinished = true
     @AppStorage("notifySubagent") private var notifySubagent = true
@@ -22,6 +23,7 @@ struct SettingsView: View {
                 Toggle("Questions", isOn: $notifyQuestions)
                 Toggle("Permission requests", isOn: $notifyPermissions)
                 Toggle("MCP input requests", isOn: $notifyElicitations)
+                Toggle("Claude is thinking", isOn: $notifyWorking)
                 Toggle("Idle / waiting for input", isOn: $notifyIdle)
                 Toggle("Task finished", isOn: $notifyTaskFinished)
                 Toggle("Subagent finished", isOn: $notifySubagent)

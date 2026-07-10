@@ -3,7 +3,7 @@
 # agentbar-hook — bridge between Claude Code hooks and the AgentBar menu bar app.
 #
 # Usage: agentbar-hook <event>
-#   events: ask | permission | elicit | notify | stop | subagent | sessionend | stopfailure
+#   events: working | ask | permission | elicit | notify | stop | subagent | sessionend | stopfailure
 #
 # AgentBar is notify-only: every event is fire-and-forget. This script reads the
 # hook payload from stdin, POSTs it to AgentBar's local HTTP server so it can post
