@@ -140,7 +140,7 @@ struct QueueView: View {
 
     private var titleBar: some View {
         HStack(spacing: 8) {
-            Text("claude-watch — \(queue.sessionRows.count) \(queue.sessionRows.count == 1 ? "session" : "sessions")")
+            Text("agentbar — \(queue.sessionRows.count) \(queue.sessionRows.count == 1 ? "session" : "sessions")")
                 .font(feedFont(10.5))
                 .foregroundStyle(Color.feedSub)
                 .lineLimit(1)
@@ -401,6 +401,7 @@ struct QueueView: View {
                     .foregroundStyle(Color.feedHead)
                     .lineLimit(1)
                 StatusTag(status: row.status)
+                SourceTag(source: row.source)
                 Spacer(minLength: 0)
                 if row.messageCount > 0 {
                     Text("\(row.messageCount) msgs")
@@ -579,7 +580,7 @@ struct QueueView: View {
             Text("NO SESSIONS YET")
                 .font(feedFont(14, .bold))
                 .foregroundStyle(Color.feedHead)
-            Text("start a Claude Code session · standing by")
+            Text("start a Claude Code or Copilot session · standing by")
                 .font(feedFont(11))
                 .foregroundStyle(Color.feedSub)
         }

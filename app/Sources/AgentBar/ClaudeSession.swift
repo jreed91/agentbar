@@ -38,6 +38,10 @@ struct ClaudeSession: Identifiable, Sendable, Hashable {
     let trail: [ActivityEntry]
     /// The transcript file, kept so the row can reveal it in Finder.
     let fileURL: URL
+    /// Which agent this session belongs to. Set by the scanner that discovered it —
+    /// `.claude` for the Claude Code transcript tree, `.copilot` for the Copilot CLI
+    /// session-state tree. Lets the roster tag and de-duplicate the two independently.
+    let source: AgentSource
 }
 
 /// Scans the Claude Code transcript tree and parses each session into a `ClaudeSession`.
@@ -181,7 +185,8 @@ actor SessionScanner {
             messageCount: messageCount,
             activity: trail.last?.label,
             trail: trail,
-            fileURL: url
+            fileURL: url,
+            source: .claude
         )
     }
 

@@ -59,6 +59,18 @@ else
   echo "         regenerate it with: python3 scripts/generate-icon.py" >&2
 fi
 
+# Bundle the hook bridge so it has a stable absolute path for the Copilot CLI integration
+# (Claude Code references it via ${CLAUDE_PLUGIN_ROOT} from the marketplace-installed plugin;
+# Copilot's personal hooks need a fixed path, and the installed app bundle is that anchor —
+# scripts/install-copilot-hooks.sh looks here first).
+HOOK_SRC="${REPO_ROOT}/plugin/bin/agentbar-hook"
+if [ -f "$HOOK_SRC" ]; then
+  cp "$HOOK_SRC" "${CONTENTS}/Resources/agentbar-hook"
+  chmod +x "${CONTENTS}/Resources/agentbar-hook"
+else
+  echo "warning: ${HOOK_SRC} not found; app bundle will omit the Copilot hook bridge" >&2
+fi
+
 # Classic bundle signature.
 printf 'APPL????' > "${CONTENTS}/PkgInfo"
 

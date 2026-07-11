@@ -1,6 +1,51 @@
 import Foundation
 import Combine
 
+/// Which coding agent a session belongs to. AgentBar started as a Claude Code companion,
+/// but the plumbing — the fire-and-forget hook bridge and the on-disk session scan — is
+/// agent-agnostic, so it also feeds off GitHub Copilot CLI, which exposes the same shape of
+/// lifecycle hooks (`~/.copilot/hooks/*.json`) and an on-disk session log
+/// (`~/.copilot/session-state/<id>/events.jsonl`). A live hook event carries its source in
+/// the `X-AgentBar-Agent` header; a scanned session carries the source of the tree it came
+/// from. `.claude` is the default so every existing code path keeps its behaviour.
+enum AgentSource: String, Sendable {
+    case claude
+    case copilot
+
+    /// Parses the `X-AgentBar-Agent` header value, defaulting to Claude for anything
+    /// unrecognized (including the empty header the Claude plugin sends).
+    init(header: String?) {
+        switch header?.lowercased() {
+        case "copilot": self = .copilot
+        default: self = .claude
+        }
+    }
+
+    /// Short name for inline copy ("Claude finished the task", "Copilot is working").
+    var shortName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .copilot: return "Copilot"
+        }
+    }
+
+    /// Full product name for session-level copy.
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .copilot: return "GitHub Copilot"
+        }
+    }
+
+    /// The uppercase pill shown on a session row so Claude and Copilot rows are told apart.
+    var tagLabel: String {
+        switch self {
+        case .claude: return "CLAUDE"
+        case .copilot: return "COPILOT"
+        }
+    }
+}
+
 /// The hook events AgentBar handles, matching the plugin's `agentbar-hook <event>`
 /// argument and the server routes `/v1/<event>`. The raw value is the route/token.
 ///
@@ -86,16 +131,28 @@ struct HookPayload {
     init(data: Data) {
         let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         self.raw = dict
-        self.sessionID = (dict["session_id"] as? String) ?? ""
+        // Claude Code (and Copilot's VS-Code-compatible mode) send snake_case keys; Copilot
+        // CLI's native hooks send the same fields in camelCase. Probe both spellings so one
+        // parser serves either agent without a per-agent branch.
+        self.sessionID = HookPayload.firstString(dict, "session_id", "sessionId") ?? ""
         self.cwd = (dict["cwd"] as? String) ?? ""
-        self.toolName = dict["tool_name"] as? String
-        self.toolInput = dict["tool_input"] as? [String: Any]
+        self.toolName = HookPayload.firstString(dict, "tool_name", "toolName")
+        self.toolInput = (dict["tool_input"] as? [String: Any]) ?? (dict["toolInput"] as? [String: Any])
         self.message = dict["message"] as? String
-        self.hookEventName = dict["hook_event_name"] as? String
-        self.lastAssistantMessage = dict["last_assistant_message"] as? String
-        self.endReason = (dict["end_reason"] as? String) ?? (dict["reason"] as? String)
-        self.errorType = dict["error_type"] as? String
-        self.errorMessage = dict["error_message"] as? String
+        self.hookEventName = HookPayload.firstString(dict, "hook_event_name", "hookEventName")
+        self.lastAssistantMessage = HookPayload.firstString(dict, "last_assistant_message", "lastAssistantMessage")
+        self.endReason = HookPayload.firstString(dict, "end_reason", "reason", "endReason")
+        self.errorType = HookPayload.firstString(dict, "error_type", "errorType")
+        self.errorMessage = HookPayload.firstString(dict, "error_message", "errorMessage")
+    }
+
+    /// Returns the first non-empty string value among `keys`, or nil. Lets one field accept
+    /// both the snake_case and camelCase spellings the two agents use.
+    private static func firstString(_ dict: [String: Any], _ keys: String...) -> String? {
+        for key in keys {
+            if let value = dict[key] as? String, !value.isEmpty { return value }
+        }
+        return nil
     }
 
     /// Extracts the questions array from an `AskUserQuestion` `tool_input`:
@@ -316,17 +373,21 @@ final class PendingItem: Identifiable, ObservableObject {
     let cwd: String
     let createdAt: Date
     let kind: Kind
+    /// Which agent raised this event (Claude Code or GitHub Copilot), from the hook's
+    /// `X-AgentBar-Agent` header. Drives the source tag on the row and agent-specific copy.
+    let source: AgentSource
     /// Clues about the terminal/IDE hosting the session, captured from the hook
     /// environment. Focus resolves these to the right app so the correct window comes
     /// forward even when several terminals are open; nil falls back to a priority scan.
     let terminalHint: TerminalHint?
 
-    init(sessionID: String, cwd: String, kind: Kind, terminalHint: TerminalHint? = nil) {
+    init(sessionID: String, cwd: String, kind: Kind, source: AgentSource = .claude, terminalHint: TerminalHint? = nil) {
         self.id = UUID()
         self.sessionID = sessionID
         self.cwd = cwd
         self.createdAt = Date()
         self.kind = kind
+        self.source = source
         self.terminalHint = terminalHint
     }
 

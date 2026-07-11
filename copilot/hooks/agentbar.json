@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "userPromptSubmitted": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ working copilot", "timeout": 10 }
+    ],
+    "postToolUse": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ resolved copilot", "timeout": 10 }
+    ],
+    "agentStop": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ stop copilot", "timeout": 10 }
+    ],
+    "subagentStop": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ subagent copilot", "timeout": 10 }
+    ],
+    "sessionEnd": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ sessionend copilot", "timeout": 10 }
+    ],
+    "errorOccurred": [
+      { "type": "command", "command": "__AGENTBAR_HOOK__ stopfailure copilot", "timeout": 10 }
+    ]
+  }
+}

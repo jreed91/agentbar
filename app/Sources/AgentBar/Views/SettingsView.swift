@@ -33,7 +33,7 @@ struct SettingsView: View {
                 Toggle("Questions", isOn: $notifyQuestions)
                 Toggle("Permission requests", isOn: $notifyPermissions)
                 Toggle("MCP input requests", isOn: $notifyElicitations)
-                Toggle("Claude is thinking", isOn: $notifyWorking)
+                Toggle("Agent is thinking", isOn: $notifyWorking)
                 Toggle("Idle / waiting for input", isOn: $notifyIdle)
                 Toggle("Task finished", isOn: $notifyTaskFinished)
                 Toggle("Subagent finished", isOn: $notifySubagent)

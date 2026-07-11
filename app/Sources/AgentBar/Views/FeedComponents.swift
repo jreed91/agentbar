@@ -73,6 +73,17 @@ extension FeedStatus {
     }
 }
 
+extension AgentSource {
+    /// The accent for the source pill on a session row — phosphor green for Claude, the
+    /// working-blue for Copilot, so the two are distinguishable at a glance.
+    var tagColor: Color {
+        switch self {
+        case .claude: return .feedGreen
+        case .copilot: return .stWorking
+        }
+    }
+}
+
 extension FeedMood {
     /// The phosphor tint the mascot glows in (design `la-mascot[data-mood]`).
     var color: Color {
@@ -99,6 +110,28 @@ struct StatusTag: View {
             .padding(.vertical, 2)
             .background(status.color)
             .clipShape(RoundedRectangle(cornerRadius: 2))
+    }
+}
+
+// MARK: - Source tag
+
+/// A small outlined pill naming the agent a session belongs to (CLAUDE / COPILOT). Outlined
+/// rather than filled so it sits quietly beside the filled status tag while still letting a
+/// mixed Claude + Copilot roster be read at a glance.
+struct SourceTag: View {
+    let source: AgentSource
+
+    var body: some View {
+        Text(source.tagLabel)
+            .font(feedFont(8.5, .bold))
+            .tracking(0.5)
+            .foregroundStyle(source.tagColor)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1.5)
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(source.tagColor.opacity(0.5), lineWidth: 1)
+            )
     }
 }
 

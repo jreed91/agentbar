@@ -32,15 +32,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.subtitle = URL(fileURLWithPath: item.cwd).lastPathComponent
 
+        let agentName = item.source.shortName
         switch item.kind {
         case .question(let questions):
-            content.title = "Question from Claude"
-            content.body = questions.first?.question ?? "Claude has a question."
+            content.title = "Question from \(agentName)"
+            content.body = questions.first?.question ?? "\(agentName) has a question."
         case .permission(let toolName, _, _):
             content.title = "Permission request"
-            content.body = "Claude wants to use \(toolName)."
+            content.body = "\(agentName) wants to use \(toolName)."
         case .elicitation(let request):
-            content.title = "Claude needs input"
+            content.title = "\(agentName) needs input"
             content.body = request.message
         case .info(_, let title, let body):
             content.title = title

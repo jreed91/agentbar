@@ -1,10 +1,11 @@
 # AgentBar
 
-A native macOS menu bar app plus a zero-config Claude Code plugin. When a Claude Code
-agent needs something from you — a multiple-choice question, a permission prompt, or it
-has gone idle waiting for input — AgentBar notifies you and brings your terminal back to
-the front so you can answer there. It is a **notification tool, not an input tool**: it
-never blocks your session and never sits between you and Claude.
+A native macOS menu bar app that watches your terminal coding agents — **Claude Code** and
+**GitHub Copilot CLI** — through a zero-config plugin (Claude) and a one-command hook install
+(Copilot). When an agent needs something from you — a multiple-choice question, a permission
+prompt, or it has gone idle waiting for input — AgentBar notifies you and brings your terminal
+back to the front so you can answer there. It is a **notification tool, not an input tool**: it
+never blocks your session and never sits between you and the agent.
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="AgentBar popover showing a multi-agent dashboard: a permission and a question waiting, one session working, two idle" width="380">
@@ -68,6 +69,31 @@ In Claude Code:
 ```
 
 The plugin's hooks activate automatically on install — no `settings.json` editing needed.
+
+### 3. GitHub Copilot CLI (optional)
+
+AgentBar also watches [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
+sessions. Copilot loads personal hooks from JSON files in its config directory rather than from
+a marketplace, so wiring it up is a one-time command instead of a plugin install. With the app
+installed (step 1), run:
+
+```sh
+brew install --cask agentbar          # if you haven't already (step 1)
+git clone https://github.com/jreed91/claude-notification && cd claude-notification
+make install-copilot                   # writes ~/.copilot/hooks/agentbar.json
+```
+
+`make install-copilot` (a thin wrapper over `scripts/install-copilot-hooks.sh`) stamps the
+absolute path of the hook bridge bundled inside `AgentBar.app` into
+`~/.copilot/hooks/agentbar.json`. Restart any running Copilot sessions and they will start
+feeding AgentBar. Remove the wiring with `make uninstall-copilot`.
+
+Copilot's hook surface exposes lifecycle and status events — turn started, tool completed,
+task finished, subagent finished, session ended, and errors — but it has no equivalent of
+Claude Code's `AskUserQuestion` / permission / MCP-input prompts, so **questions and permission
+requests remain Claude-only**. Copilot sessions still appear in the roster and dashboard (read
+from `~/.copilot/session-state`), tagged `COPILOT`, and their working/finished/error states
+surface exactly like Claude's.
 
 ## What AgentBar shows you
 
@@ -213,14 +239,17 @@ claude-notification/
 ├── plugin/                            # the Claude Code plugin ("agentbar")
 │   ├── .claude-plugin/plugin.json
 │   ├── hooks/hooks.json               # PreToolUse / PermissionRequest / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
-│   └── bin/agentbar-hook              # dependency-free bash bridge (curl + sed)
+│   └── bin/agentbar-hook              # dependency-free bash bridge (curl + sed); agent-agnostic
+├── copilot/                           # GitHub Copilot CLI integration
+│   └── hooks/agentbar.json            # hook config template → ~/.copilot/hooks/agentbar.json
 ├── app/                               # Swift package for AgentBar.app
 │   ├── Package.swift
 │   ├── Sources/AgentBar/
 │   └── Support/Info.plist
 ├── Casks/agentbar.rb                  # Homebrew cask → GitHub Releases
 ├── scripts/
-│   ├── bundle.sh                      # assemble dist/AgentBar.app
+│   ├── bundle.sh                      # assemble dist/AgentBar.app (bundles agentbar-hook into Resources)
+│   ├── install-copilot-hooks.sh       # write ~/.copilot/hooks/agentbar.json (make install-copilot)
 │   └── update-cask.sh                 # stamp version + sha256 into the cask
 ├── .github/workflows/                 # ci.yml, release.yml
 ├── Makefile

@@ -39,6 +39,46 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(payload.endReason, "clear")
     }
 
+    /// GitHub Copilot CLI's native hooks send the same fields in camelCase; the parser must
+    /// read them as readily as Claude Code's snake_case so one code path serves both agents.
+    func testHookPayloadReadsCamelCaseKeys() {
+        let json = """
+        {
+          "sessionId": "cop-42",
+          "cwd": "/Users/me/project",
+          "toolName": "editFiles",
+          "toolInput": {"files": ["src/main.ts"]},
+          "hookEventName": "PostToolUse",
+          "lastAssistantMessage": "all set"
+        }
+        """
+        let payload = HookPayload(data: Data(json.utf8))
+        XCTAssertEqual(payload.sessionID, "cop-42")
+        XCTAssertEqual(payload.cwd, "/Users/me/project")
+        XCTAssertEqual(payload.toolName, "editFiles")
+        XCTAssertEqual(payload.hookEventName, "PostToolUse")
+        XCTAssertEqual(payload.lastAssistantMessage, "all set")
+        XCTAssertEqual(payload.toolInput?["files"] as? [String], ["src/main.ts"])
+    }
+
+    /// snake_case wins when both spellings are present, so a VS-Code-compatible payload that
+    /// carries both never reads the wrong one.
+    func testHookPayloadPrefersSnakeCaseWhenBothPresent() {
+        let payload = HookPayload(data: Data(#"{"session_id":"snake","sessionId":"camel"}"#.utf8))
+        XCTAssertEqual(payload.sessionID, "snake")
+    }
+
+    // MARK: - AgentSource
+
+    func testAgentSourceFromHeader() {
+        XCTAssertEqual(AgentSource(header: "copilot"), .copilot)
+        XCTAssertEqual(AgentSource(header: "Copilot"), .copilot)
+        XCTAssertEqual(AgentSource(header: "claude"), .claude)
+        XCTAssertEqual(AgentSource(header: ""), .claude)
+        XCTAssertEqual(AgentSource(header: nil), .claude)
+        XCTAssertEqual(AgentSource(header: "something-else"), .claude)
+    }
+
     func testHookPayloadMissingKeysDegradeCleanly() {
         let payload = HookPayload(data: Data("{}".utf8))
         XCTAssertEqual(payload.sessionID, "")

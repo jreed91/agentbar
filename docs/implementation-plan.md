@@ -249,3 +249,62 @@ claude-notification/
   times out and the prompt falls back to the terminal (by design, fail-open).
 - **One machine, local only** — v1 has no remote/mobile story; the server binds
   loopback with a per-launch bearer token.
+
+---
+
+## 8. Multi-agent support (GitHub Copilot CLI)
+
+AgentBar began as a Claude Code companion, but the two integration surfaces it relies on —
+a fire-and-forget lifecycle **hook** and an on-disk **session log** — are not Claude-specific.
+GitHub Copilot CLI exposes both in a near-identical shape, so Copilot is wired in by reusing
+the existing plumbing rather than duplicating it.
+
+### The two patterns, generalized
+
+| Pattern | Claude Code | GitHub Copilot CLI |
+|---|---|---|
+| Lifecycle hooks | plugin `hooks/hooks.json` (marketplace-installed, `${CLAUDE_PLUGIN_ROOT}`) | `~/.copilot/hooks/agentbar.json` (installed by `scripts/install-copilot-hooks.sh`) |
+| Hook bridge | `plugin/bin/agentbar-hook <event>` | same script, `agentbar-hook <event> copilot` |
+| Session log (roster) | `~/.claude/projects/**/*.jsonl` (`SessionScanner`) | `~/.copilot/session-state/<id>/events.jsonl` (`CopilotSessionScanner`) |
+| Payload keys | snake_case | snake_case (VS-Code-compatible) **or** camelCase (native) |
+
+### Source tagging
+
+The `agentbar-hook` bridge is agent-agnostic; the only per-agent signal is an optional second
+argument (`claude` default, `copilot`) that it forwards as the `X-AgentBar-Agent` header. The
+server parses it into an `AgentSource` and threads it through `PendingItem` → `SessionRow`, so
+rows carry a `CLAUDE` / `COPILOT` tag, agent-specific copy ("Copilot finished the task"), and a
+per-agent de-dupe key (a directory used by both agents shows two rows, not one).
+
+`HookPayload` reads both key spellings (`session_id`/`sessionId`, `tool_name`/`toolName`, …) so
+one parser serves either agent's payload format without branching.
+
+### Event mapping (attention events intentionally omitted)
+
+Copilot's hook surface has no clean equivalent of Claude's `AskUserQuestion` /
+`PermissionRequest` / `Elicitation` prompts — its `preToolUse` fires before *every* tool, not
+only ones needing approval — so mapping it to a "permission" row would be noisy and misleading.
+Only lifecycle/status events are wired:
+
+| Copilot event | AgentBar event | Result |
+|---|---|---|
+| `userPromptSubmitted` | `working` | turn started / "thinking" |
+| `postToolUse` | `resolved` | keeps the working status fresh |
+| `agentStop` | `stop` | "task finished" (with duration) |
+| `subagentStop` | `subagent` | "subagent finished" |
+| `sessionEnd` | `sessionend` | stops watching, clears rows |
+| `errorOccurred` | `stopfailure` | "run interrupted" |
+
+Questions and permission requests therefore stay Claude-only features.
+
+### Risks specific to Copilot
+
+- **`events.jsonl` is not a stable, documented contract** (github/copilot-cli#3551). The
+  `CopilotSessionScanner` parser is deliberately defensive: it probes the known event names
+  (`user.message`, `assistant.message`, `tool.execution_*`) and a few key spellings, and
+  degrades to a thinner row instead of dropping the session when the shape drifts.
+- **No plugin marketplace for Copilot** — the hook config is installed by a script that stamps
+  the bundled bridge's absolute path (from `AgentBar.app/Contents/Resources/agentbar-hook`,
+  which `bundle.sh` now includes) into `~/.copilot/hooks/agentbar.json`.
+- **Config directory** honors `$COPILOT_CONFIG_DIR`, mirroring the `$CLAUDE_CONFIG_DIR`
+  handling in the Claude scanner.

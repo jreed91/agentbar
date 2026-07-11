@@ -10,6 +10,10 @@ struct SessionRow: Identifiable {
     let title: String
     let lastActivity: Date
     let messageCount: Int
+    /// Which agent this session belongs to (Claude Code or GitHub Copilot). Drives the row's
+    /// source tag; also keys the per-location de-dupe so the same directory running under both
+    /// agents shows as two rows rather than collapsing to one.
+    let source: AgentSource
     /// The session's current status: the loudest live event (permission > question >
     /// working > error > done), or `.idle` when nothing is live.
     let status: FeedStatus
@@ -53,6 +57,7 @@ final class QueueStore: ObservableObject {
     @Published private(set) var scannedSessions: [ClaudeSession] = []
 
     private let scanner = SessionScanner()
+    private let copilotScanner = CopilotSessionScanner()
     private var isScanning = false
 
     /// Sessions AgentBar is watching, keyed by session id → the last time it sent any hook
@@ -191,8 +196,14 @@ final class QueueStore: ObservableObject {
         guard !isScanning else { return }
         isScanning = true
         Task {
-            let sessions = await scanner.scan()
-            self.scannedSessions = sessions
+            // Scan both agents' on-disk session trees concurrently and merge them into one
+            // newest-first roster. Either scan yields an empty list when that agent has never
+            // run on this machine, so a Claude-only or Copilot-only user sees exactly their
+            // own sessions.
+            async let claude = scanner.scan()
+            async let copilot = copilotScanner.scan()
+            let merged = await (claude + copilot)
+            self.scannedSessions = merged.sorted { $0.lastActivity > $1.lastActivity }
             self.isScanning = false
         }
     }
@@ -231,6 +242,7 @@ final class QueueStore: ObservableObject {
                 title: session.title,
                 lastActivity: max(session.lastActivity, liveLatest),
                 messageCount: session.messageCount,
+                source: live.first?.source ?? session.source,
                 status: rowStatus,
                 liveItems: live,
                 terminalHint: live.compactMap(\.terminalHint).first,
@@ -251,6 +263,7 @@ final class QueueStore: ObservableObject {
                 title: live.first?.summaryLine ?? "Active session",
                 lastActivity: live.map(\.createdAt).max() ?? now,
                 messageCount: 0,
+                source: live.first?.source ?? .claude,
                 status: status(for: live),
                 liveItems: live,
                 terminalHint: live.compactMap(\.terminalHint).first,
@@ -268,7 +281,11 @@ final class QueueStore: ObservableObject {
         // they are never merged together.
         var byLocation: [String: SessionRow] = [:]
         for row in rows {
-            let key = row.cwd.isEmpty ? row.id : row.cwd
+            // Key by agent + location so a directory used by both Claude and Copilot keeps a
+            // row per agent instead of one hiding the other. Sessions with no cwd key on their
+            // (unique) id so they are never merged together.
+            let location = row.cwd.isEmpty ? row.id : row.cwd
+            let key = "\(row.source.rawValue)\u{1}\(location)"
             if let existing = byLocation[key], !prefer(row, over: existing) { continue }
             byLocation[key] = row
         }
@@ -324,9 +341,10 @@ final class QueueStore: ObservableObject {
     /// notification row and returns immediately. Attention kinds (question, permission,
     /// elicitation) persist until you dismiss them and drive the badge; informational
     /// kinds auto-expire.
-    func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil) {
+    func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil, source: AgentSource = .claude) {
         let parsed = HookPayload(data: payload)
-        DebugLog.logEvent("→ \(event.rawValue)", raw: payload)
+        let agentName = source.shortName
+        DebugLog.logEvent("→ \(source.rawValue)/\(event.rawValue)", raw: payload)
 
         // Every event from a session counts as "watching" it, until it ends or goes quiet.
         if !parsed.sessionID.isEmpty, event != .sessionEnd {
@@ -350,6 +368,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .question(questions),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -362,6 +381,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .permission(toolName: toolName, command: command, detail: detail),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -375,6 +395,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .elicitation(request),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -388,6 +409,7 @@ final class QueueStore: ObservableObject {
                     sessionID: parsed.sessionID,
                     cwd: parsed.cwd,
                     kind: .info(category: .working, title: "Working", body: "Thinking…"),
+                    source: source,
                     terminalHint: terminal
                 ))
             }
@@ -404,6 +426,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .working, title: "Working", body: "Thinking…"),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -414,11 +437,12 @@ final class QueueStore: ObservableObject {
             if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
                 return
             }
-            let body = parsed.message ?? "Claude is waiting for your input."
+            let body = parsed.message ?? "\(agentName) is waiting for your input."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .working, title: "Waiting for input", body: body),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -428,7 +452,7 @@ final class QueueStore: ObservableObject {
             let elapsed = turnStart[parsed.sessionID].map { Date().timeIntervalSince($0) }
             turnStart[parsed.sessionID] = nil
             guard settingEnabled("notifyTaskFinished") else { return }
-            var body = parsed.message ?? "Claude finished the current task."
+            var body = parsed.message ?? "\(agentName) finished the current task."
             if let elapsed, elapsed >= 1 {
                 body += " · finished in \(DurationFormat.short(elapsed))"
             }
@@ -436,6 +460,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Task finished", body: body),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -446,6 +471,7 @@ final class QueueStore: ObservableObject {
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Subagent finished", body: body),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -455,11 +481,12 @@ final class QueueStore: ObservableObject {
             sessionsLastSeen[parsed.sessionID] = nil
             turnStart[parsed.sessionID] = nil
             guard settingEnabled("notifySessionEnd") else { return }
-            let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The Claude Code session ended."
+            let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The \(source.displayName) session ended."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .info(category: .done, title: "Session ended", body: body),
+                source: source,
                 terminalHint: terminal
             ))
 
@@ -470,7 +497,8 @@ final class QueueStore: ObservableObject {
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
-                kind: .info(category: .error, title: "Claude run interrupted", body: detail),
+                kind: .info(category: .error, title: "\(agentName) run interrupted", body: detail),
+                source: source,
                 terminalHint: terminal
             ))
         }

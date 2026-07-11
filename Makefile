@@ -14,7 +14,8 @@ DIST      := dist
 APP_BUNDLE := $(DIST)/$(APP_NAME).app
 ZIP        := $(DIST)/$(APP_NAME)-$(VERSION).zip
 
-.PHONY: all build test bundle sign adhoc zip notarize install clean icon doctor
+.PHONY: all build test bundle sign adhoc zip notarize install clean icon doctor \
+        install-copilot uninstall-copilot
 
 all: bundle
 
@@ -40,6 +41,11 @@ doctor:
 		echo "ok   plugin hook present and executable"; \
 	else \
 		echo "FAIL plugin/bin/agentbar-hook missing or not executable"; \
+	fi
+	@if [ -f "$${COPILOT_CONFIG_DIR:-$$HOME/.copilot}/hooks/agentbar.json" ]; then \
+		echo "ok   Copilot hooks installed: $${COPILOT_CONFIG_DIR:-$$HOME/.copilot}/hooks/agentbar.json"; \
+	else \
+		echo "info Copilot hooks not installed — run 'make install-copilot' (optional; Claude Code needs no step here)"; \
 	fi
 	@command -v curl >/dev/null 2>&1 \
 		&& echo "ok   curl available" \
@@ -90,6 +96,14 @@ notarize: zip
 install: bundle adhoc
 	rm -rf /Applications/$(APP_NAME).app
 	cp -R $(APP_BUNDLE) /Applications/$(APP_NAME).app
+
+# Wire GitHub Copilot CLI to AgentBar by writing ~/.copilot/hooks/agentbar.json. Claude Code
+# gets its hooks from the plugin marketplace; Copilot needs this one-time install step.
+install-copilot:
+	scripts/install-copilot-hooks.sh
+
+uninstall-copilot:
+	scripts/install-copilot-hooks.sh --uninstall
 
 clean:
 	rm -rf $(DIST) app/.build
