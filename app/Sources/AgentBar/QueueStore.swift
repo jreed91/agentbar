@@ -21,6 +21,18 @@ struct SessionRow: Identifiable {
     /// True when the session has recent hook activity (seen within `sessionTTL`) or a live
     /// item right now — i.e. a terminal is plausibly still open on it.
     let isLive: Bool
+    /// A read-only, one-line "what this agent is doing" label from the transcript (last tool
+    /// or prose). Shown on rows that aren't currently waiting on you, so the roster reads as
+    /// a live dashboard. Nil for a synthesized live-only row not yet scanned from disk.
+    let activity: String?
+}
+
+/// At-a-glance counts for the dashboard summary strip, bucketed from the merged session
+/// rows: sessions waiting on you (permission/question), actively working, and quiet.
+struct DashboardSummary {
+    let needsYou: Int
+    let working: Int
+    let idle: Int
 }
 
 /// The source of truth for the popover and the menu-bar badge. All access is on the
@@ -108,6 +120,21 @@ final class QueueStore: ObservableObject {
 
     /// The ASCII face shown in the menu-bar label (design `asciiMini`).
     var menuBarFace: String { mood.miniFace }
+
+    /// At-a-glance dashboard counts bucketed from the merged session rows: how many sessions
+    /// need you (a permission or question is waiting), are actively working, and are quiet
+    /// (idle, finished, or errored). Drives the popover's dashboard summary strip.
+    var dashboardSummary: DashboardSummary {
+        var needsYou = 0, working = 0, idle = 0
+        for row in sessionRows {
+            switch row.status {
+            case .permission, .question: needsYou += 1
+            case .working: working += 1
+            case .done, .error, .idle: idle += 1
+            }
+        }
+        return DashboardSummary(needsYou: needsYou, working: working, idle: idle)
+    }
 
     /// The hero headline in the popover — a short summary of what, if anything, needs you.
     var headline: String {
@@ -200,7 +227,8 @@ final class QueueStore: ObservableObject {
                 status: rowStatus,
                 liveItems: live,
                 terminalHint: live.compactMap(\.terminalHint).first,
-                isLive: isLive(session.id, now: now) || !live.isEmpty || fresh
+                isLive: isLive(session.id, now: now) || !live.isEmpty || fresh,
+                activity: session.activity
             ))
         }
 
@@ -217,7 +245,8 @@ final class QueueStore: ObservableObject {
                 status: status(for: live),
                 liveItems: live,
                 terminalHint: live.compactMap(\.terminalHint).first,
-                isLive: true
+                isLive: true,
+                activity: nil
             ))
         }
 

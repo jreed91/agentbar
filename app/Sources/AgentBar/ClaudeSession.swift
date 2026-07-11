@@ -20,6 +20,11 @@ struct ClaudeSession: Identifiable, Sendable, Hashable {
     let lastActivity: Date
     /// Count of user + assistant messages in the transcript.
     let messageCount: Int
+    /// A compact, human label for the most recent thing the agent did — the last tool it
+    /// invoked ("Editing QueueStore.swift", "Running: swift build") or a short snippet of
+    /// its last prose. Read-only, derived from the transcript; nil when nothing usable was
+    /// found. Surfaced on quiet/working sessions so the roster reads like a live dashboard.
+    let activity: String?
     /// The transcript file, kept so the row can reveal it in Finder.
     let fileURL: URL
 }
@@ -111,6 +116,7 @@ actor SessionScanner {
         var cwd: String?
         var lastTimestamp: Date?
         var messageCount = 0
+        var lastActivity: String?
 
         for line in contents.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
@@ -136,6 +142,12 @@ actor SessionScanner {
                    let text = userText(from: entry["message"]) {
                     firstUserText = text
                 }
+                // Track the newest usable action so the row can show what the agent is
+                // doing. Entries are chronological, so the last non-nil label wins; a
+                // trailing entry we can't summarize leaves the previous one intact.
+                if type == "assistant", let label = activityLabel(from: entry["message"]) {
+                    lastActivity = label
+                }
             }
         }
 
@@ -150,6 +162,7 @@ actor SessionScanner {
             title: title,
             lastActivity: lastTimestamp ?? modified,
             messageCount: messageCount,
+            activity: lastActivity,
             fileURL: url
         )
     }
@@ -175,6 +188,73 @@ actor SessionScanner {
         // are not prompts the human typed, so they make poor titles.
         if text.hasPrefix("<") { return nil }
         return text
+    }
+
+    /// A compact label for the most recent action in an assistant message: the last tool it
+    /// invoked (rendered as a friendly verb phrase) or a short snippet of its text when the
+    /// message is plain prose. Returns nil when there is nothing usable to show.
+    private static func activityLabel(from message: Any?) -> String? {
+        guard let message = message as? [String: Any] else { return nil }
+        if let blocks = message["content"] as? [[String: Any]] {
+            // The last tool_use block in the message is the most recent action.
+            for block in blocks.reversed() where (block["type"] as? String) == "tool_use" {
+                if let label = toolActivity(name: block["name"] as? String,
+                                            input: block["input"] as? [String: Any]) {
+                    return label
+                }
+            }
+            // No tool call — fall back to the message's own text.
+            let text = blocks
+                .filter { ($0["type"] as? String) == "text" }
+                .compactMap { $0["text"] as? String }
+                .joined(separator: " ")
+            return snippet(text)
+        } else if let string = message["content"] as? String {
+            return snippet(string)
+        }
+        return nil
+    }
+
+    /// Renders a Claude Code tool call as a short verb phrase for the activity line. Pulls the
+    /// one identifying argument per tool (file, command, pattern) and falls back to the tool
+    /// name; MCP tools collapse to a generic label since their names are namespaced noise.
+    private static func toolActivity(name: String?, input: [String: Any]?) -> String? {
+        guard let name, !name.isEmpty else { return nil }
+        let file = (input?["file_path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+        switch name {
+        case "Edit", "Write", "MultiEdit", "NotebookEdit":
+            return file.map { "Editing \($0)" } ?? "Editing files"
+        case "Read":
+            return file.map { "Reading \($0)" } ?? "Reading a file"
+        case "Bash":
+            if let cmd = (input?["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cmd.isEmpty {
+                return "Running: \(condense(cmd, limit: 48))"
+            }
+            return "Running a command"
+        case "Grep", "Glob":
+            if let pattern = (input?["pattern"] as? String), !pattern.isEmpty {
+                return "Searching \(condense(pattern, limit: 40))"
+            }
+            return "Searching the codebase"
+        case "Task":
+            return "Delegating to a subagent"
+        case "WebFetch", "WebSearch":
+            return "Searching the web"
+        case "TodoWrite":
+            return "Updating its task list"
+        default:
+            return name.hasPrefix("mcp__") ? "Using an MCP tool" : "Using \(name)"
+        }
+    }
+
+    /// Trims a text block to a single tidy snippet for the activity line, discarding the
+    /// synthetic tag-wrapped turns (tool results, slash-command envelopes) that make poor
+    /// activity labels. Returns nil when nothing usable remains.
+    private static func snippet(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, !text.hasPrefix("<") else { return nil }
+        return condense(text, limit: 60)
     }
 
     /// Collapses whitespace and truncates so a title is a single tidy line.

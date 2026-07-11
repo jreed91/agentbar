@@ -221,16 +221,55 @@ struct QueueView: View {
     // MARK: - Feed
 
     private var feed: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(queue.sessionRows.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { DashedRule() }
-                    sessionLine(row)
+        VStack(spacing: 0) {
+            dashboardStrip
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(queue.sessionRows.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { DashedRule() }
+                        sessionLine(row)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 2)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 2)
         }
+    }
+
+    /// A pinned at-a-glance summary of the parallel roster — how many sessions need you, are
+    /// working, or are quiet — sitting above the scrolling feed. Read-only, like the rest of
+    /// AgentBar: it's the multi-agent overview, not a control surface.
+    private var dashboardStrip: some View {
+        let summary = queue.dashboardSummary
+        return HStack(spacing: 14) {
+            summaryStat(symbol: "●", count: summary.needsYou, label: "need you", color: .stPermission)
+            summaryStat(symbol: "⚙", count: summary.working, label: "working", color: .stWorking)
+            summaryStat(symbol: "○", count: summary.idle, label: "idle", color: .feedDim)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.feedGreen.opacity(0.14)).frame(height: 1)
+        }
+    }
+
+    /// One `symbol count label` cell of the dashboard strip. A zero count dims to keep the
+    /// row's layout stable without drawing the eye to empty buckets.
+    private func summaryStat(symbol: String, count: Int, label: String, color: Color) -> some View {
+        let active = count > 0
+        return HStack(spacing: 4) {
+            Text(symbol)
+                .font(feedFont(10))
+                .foregroundStyle(active ? color : Color.feedDim.opacity(0.5))
+            Text("\(count)")
+                .font(feedFont(11, .bold))
+                .foregroundStyle(active ? Color.feedHead : Color.feedDim)
+            Text(label)
+                .font(feedFont(10))
+                .foregroundStyle(active ? Color.feedSub : Color.feedDim.opacity(0.6))
+        }
+        .help("\(count) \(label)")
     }
 
     /// One session row: its status, a title from the transcript, any live hook event folded
@@ -270,6 +309,18 @@ struct QueueView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+
+            // What the agent is doing, read from the transcript — shown only when nothing is
+            // waiting on you (an attention line below would otherwise say it better). Tinted
+            // blue while working, dim when the session is quiet.
+            if attention == nil, let activity = row.activity {
+                Text("⋯ \(activity)")
+                    .font(feedFont(10.5))
+                    .foregroundStyle(row.status == .working ? Color.stWorking : Color.feedDim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             // A live hook event waiting on you in this session, if any.
             if let attention {
