@@ -30,6 +30,15 @@ struct QueueView: View {
     /// When true the feed area shows the recent-activity log instead of the live sessions.
     @State private var showHistory = false
 
+    /// Session ids whose read-only activity trail is expanded in the feed. Toggled per row;
+    /// nothing here drives a session — it only reveals more of what already happened.
+    @State private var expandedSessions: Set<String> = []
+
+    /// When true the feed hides quiet historical sessions (idle transcripts with no recent
+    /// hook activity), leaving only the sessions a terminal is plausibly still open on.
+    /// Persisted so the preference survives relaunch.
+    @AppStorage("liveSessionsOnly") private var liveSessionsOnly = false
+
     private let minHeight = 260.0, maxHeight = 820.0
 
     /// One shared formatter for today's session timestamps (HH:mm:ss).
@@ -137,6 +146,7 @@ struct QueueView: View {
                 .lineLimit(1)
             Spacer(minLength: 8)
             LiveBadge()
+            filterToggle
             historyToggle
             settingsGear
         }
@@ -145,6 +155,24 @@ struct QueueView: View {
         .background(Color.feedGreen.opacity(0.05))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.feedGreen.opacity(0.22)).frame(height: 1)
+        }
+    }
+
+    /// Filters the roster to live sessions only, hiding quiet historical transcripts. Hidden
+    /// while the history log is showing, since it filters the session feed, not the log.
+    @ViewBuilder
+    private var filterToggle: some View {
+        if !showHistory {
+            Button {
+                liveSessionsOnly.toggle()
+            } label: {
+                Image(systemName: liveSessionsOnly ? "line.3.horizontal.decrease.circle.fill"
+                                                    : "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(liveSessionsOnly ? Color.feedGreen : Color.feedSub)
+            }
+            .buttonStyle(.plain)
+            .help(liveSessionsOnly ? "Showing live sessions only" : "Show live sessions only")
         }
     }
 
@@ -221,16 +249,139 @@ struct QueueView: View {
     // MARK: - Feed
 
     private var feed: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(queue.sessionRows.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { DashedRule() }
-                    sessionLine(row)
+        let sections = groupedRows(displayedRows)
+        return VStack(spacing: 0) {
+            dashboardStrip
+            if sections.isEmpty {
+                filteredEmptyState
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(sections) { section in
+                            groupHeader(section.group, count: section.rows.count)
+                            ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
+                                if index > 0 { DashedRule() }
+                                sessionLine(row)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 2)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 2)
         }
+    }
+
+    /// The rows to show, after applying the live-only filter. Ordering (newest-first) is
+    /// preserved from the store; grouping re-buckets without disturbing within-group order.
+    private var displayedRows: [SessionRow] {
+        let rows = queue.sessionRows
+        return liveSessionsOnly ? rows.filter(\.isLive) : rows
+    }
+
+    /// One state bucket of the grouped roster, identified by its group index for `ForEach`.
+    private struct SessionSection: Identifiable {
+        let group: Int
+        let rows: [SessionRow]
+        var id: Int { group }
+    }
+
+    /// Buckets rows into the dashboard's three states — needs you (0), working (1), quiet (2)
+    /// — dropping empty buckets and keeping the store's newest-first order within each.
+    private func groupedRows(_ rows: [SessionRow]) -> [SessionSection] {
+        var buckets: [Int: [SessionRow]] = [:]
+        for row in rows { buckets[groupOf(row), default: []].append(row) }
+        return [0, 1, 2].compactMap { group in
+            guard let rows = buckets[group], !rows.isEmpty else { return nil }
+            return SessionSection(group: group, rows: rows)
+        }
+    }
+
+    /// Which dashboard bucket a row's status belongs to (mirrors `dashboardStrip`).
+    private func groupOf(_ row: SessionRow) -> Int {
+        switch row.status {
+        case .permission, .question: return 0
+        case .working: return 1
+        case .done, .error, .idle: return 2
+        }
+    }
+
+    /// A section header for a state bucket: its symbol, name, and count, colored to match the
+    /// dashboard strip so the roster reads as one grouped overview.
+    private func groupHeader(_ group: Int, count: Int) -> some View {
+        let (symbol, title, color): (String, String, Color) = {
+            switch group {
+            case 0: return ("●", "NEEDS YOU", .stPermission)
+            case 1: return ("⚙", "WORKING", .stWorking)
+            default: return ("○", "IDLE", .feedDim)
+            }
+        }()
+        return HStack(spacing: 6) {
+            Text("\(symbol) \(title)")
+                .font(feedFont(9.5, .bold))
+                .tracking(1)
+                .foregroundStyle(color)
+            Text("\(count)")
+                .font(feedFont(9.5, .bold))
+                .foregroundStyle(Color.feedDim)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 9)
+        .padding(.bottom, 1)
+    }
+
+    /// Shown when the live-only filter hides every session — the roster isn't empty, it's
+    /// just filtered, so point back at the toggle rather than the "no sessions yet" state.
+    private var filteredEmptyState: some View {
+        VStack(spacing: 6) {
+            Text("[ -_- ]")
+                .font(feedFont(13, .bold))
+                .foregroundStyle(Color.feedDim)
+            Text("NO LIVE SESSIONS")
+                .font(feedFont(13, .bold))
+                .foregroundStyle(Color.feedHead)
+            Text("only quiet history · clear the filter to see it")
+                .font(feedFont(10.5))
+                .foregroundStyle(Color.feedSub)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+    }
+
+    /// A pinned at-a-glance summary of the parallel roster — how many sessions need you, are
+    /// working, or are quiet — sitting above the scrolling feed. Read-only, like the rest of
+    /// AgentBar: it's the multi-agent overview, not a control surface.
+    private var dashboardStrip: some View {
+        let summary = queue.dashboardSummary
+        return HStack(spacing: 14) {
+            summaryStat(symbol: "●", count: summary.needsYou, label: "need you", color: .stPermission)
+            summaryStat(symbol: "⚙", count: summary.working, label: "working", color: .stWorking)
+            summaryStat(symbol: "○", count: summary.idle, label: "idle", color: .feedDim)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.feedGreen.opacity(0.14)).frame(height: 1)
+        }
+    }
+
+    /// One `symbol count label` cell of the dashboard strip. A zero count dims to keep the
+    /// row's layout stable without drawing the eye to empty buckets.
+    private func summaryStat(symbol: String, count: Int, label: String, color: Color) -> some View {
+        let active = count > 0
+        return HStack(spacing: 4) {
+            Text(symbol)
+                .font(feedFont(10))
+                .foregroundStyle(active ? color : Color.feedDim.opacity(0.5))
+            Text("\(count)")
+                .font(feedFont(11, .bold))
+                .foregroundStyle(active ? Color.feedHead : Color.feedDim)
+            Text(label)
+                .font(feedFont(10))
+                .foregroundStyle(active ? Color.feedSub : Color.feedDim.opacity(0.6))
+        }
+        .help("\(count) \(label)")
     }
 
     /// One session row: its status, a title from the transcript, any live hook event folded
@@ -271,10 +422,28 @@ struct QueueView: View {
             }
             .buttonStyle(.plain)
 
+            // When nothing is waiting on you, show what the agent is doing (from the
+            // transcript) and, for a turn in flight, how long it has been running — the
+            // read-only "live agent" view. Activity is tinted blue while working, dim
+            // when the session is quiet.
+            if attention == nil {
+                if let activity = row.activity {
+                    Text("⋯ \(activity)")
+                        .font(feedFont(10.5))
+                        .foregroundStyle(row.status == .working ? Color.stWorking : Color.feedDim)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if row.status == .working, let since = row.workingSince {
+                    ElapsedLabel(since: since, color: .stWorking, verb: "working")
+                }
+            }
+
             // A live hook event waiting on you in this session, if any.
             if let attention {
                 attentionLines(attention)
-                WaitingLabel(since: attention.createdAt, color: attention.feedStatus.color)
+                ElapsedLabel(since: attention.createdAt, color: attention.feedStatus.color)
 
                 // Command box, for permissions that carry one.
                 if let command = commandText(attention) {
@@ -295,6 +464,11 @@ struct QueueView: View {
             }
 
             actions(for: row, attention: attention)
+
+            // The expanded activity trail, when this session is toggled open.
+            if expandedSessions.contains(row.id), !row.trail.isEmpty {
+                trailView(row.trail)
+            }
         }
         .padding(.vertical, 8)
     }
@@ -339,9 +513,51 @@ struct QueueView: View {
                     queue.toggleMute(row.cwd)
                 }
             }
+            if !row.trail.isEmpty {
+                let open = expandedSessions.contains(row.id)
+                KeycapButton(key: open ? "⌄" : "›", label: open ? "hide" : "trail", style: .focus) {
+                    toggleTrail(row.id)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
+    }
+
+    /// Expands or collapses a session's read-only activity trail in the feed.
+    private func toggleTrail(_ sessionID: String) {
+        if expandedSessions.contains(sessionID) {
+            expandedSessions.remove(sessionID)
+        } else {
+            expandedSessions.insert(sessionID)
+        }
+    }
+
+    /// The expanded read-only activity trail: the session's recent actions, newest-first, each
+    /// with its timestamp. Parsed from the transcript — the closest read-only analog to
+    /// attaching to a running agent, without any control channel.
+    @ViewBuilder
+    private func trailView(_ trail: [ActivityEntry]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(trail.reversed().enumerated()), id: \.offset) { _, entry in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(entry.at.map { Self.stamp.string(from: $0) } ?? "··:··:··")
+                        .font(feedFont(9.5))
+                        .foregroundStyle(Color.feedDim)
+                    Text(entry.label)
+                        .font(feedFont(10))
+                        .foregroundStyle(Color.feedSub)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.top, 3)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.feedGreen.opacity(0.18)).frame(width: 1)
+        }
     }
 
     /// Clears every live attention row for a session. There is no reply channel back into a

@@ -1,5 +1,13 @@
 import Foundation
 
+/// One step in a session's recent-activity trail: a single action the agent took (a tool
+/// call rendered as a verb phrase, or a snippet of prose) with the timestamp of the message
+/// it came from. Read-only, parsed from the transcript; the drill-in shows the last handful.
+struct ActivityEntry: Sendable, Hashable {
+    let at: Date?
+    let label: String
+}
+
 /// A Claude Code session discovered on disk, independent of whether AgentBar ever saw a
 /// hook from it. Claude Code writes a full transcript of every session to
 /// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` (or under `$CLAUDE_CONFIG_DIR`),
@@ -20,6 +28,14 @@ struct ClaudeSession: Identifiable, Sendable, Hashable {
     let lastActivity: Date
     /// Count of user + assistant messages in the transcript.
     let messageCount: Int
+    /// A compact, human label for the most recent thing the agent did — the last tool it
+    /// invoked ("Editing QueueStore.swift", "Running: swift build") or a short snippet of
+    /// its last prose. Read-only, derived from the transcript; nil when nothing usable was
+    /// found. Surfaced on quiet/working sessions so the roster reads like a live dashboard.
+    let activity: String?
+    /// The most recent actions in the session, oldest-first and capped, for the drill-in's
+    /// read-only activity trail. `activity` is just this trail's last label.
+    let trail: [ActivityEntry]
     /// The transcript file, kept so the row can reveal it in Finder.
     let fileURL: URL
 }
@@ -34,6 +50,10 @@ actor SessionScanner {
     /// accumulate thousands of historical transcripts; the roster only needs the recent
     /// ones, and this bounds both the parse cost and the popover's list length.
     private let maxSessions = 200
+
+    /// How many recent actions the drill-in trail keeps per session. Small so the popover
+    /// stays compact and the cached `ClaudeSession` stays light.
+    private static let trailCap = 8
 
     private struct CacheEntry {
         let modified: Date
@@ -111,6 +131,7 @@ actor SessionScanner {
         var cwd: String?
         var lastTimestamp: Date?
         var messageCount = 0
+        var trail: [ActivityEntry] = []
 
         for line in contents.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
@@ -126,15 +147,23 @@ actor SessionScanner {
                 cwd = entryCwd
             }
 
-            if let stamp = (entry["timestamp"] as? String).flatMap(parseTimestamp) {
-                if lastTimestamp == nil || stamp > lastTimestamp! { lastTimestamp = stamp }
-            }
+            let stamp = (entry["timestamp"] as? String).flatMap(parseTimestamp)
+            if let stamp, lastTimestamp == nil || stamp > lastTimestamp! { lastTimestamp = stamp }
 
             if type == "user" || type == "assistant" {
                 messageCount += 1
                 if type == "user", firstUserText == nil,
                    let text = userText(from: entry["message"]) {
                     firstUserText = text
+                }
+                // Append each action this assistant message took to the trail so the drill-in
+                // can show a recent history. Entries are chronological; a rolling window keeps
+                // only the last `trailCap` so the array never grows with the transcript.
+                if type == "assistant" {
+                    for label in activityLabels(from: entry["message"]) {
+                        trail.append(ActivityEntry(at: stamp, label: label))
+                    }
+                    if trail.count > trailCap { trail.removeFirst(trail.count - trailCap) }
                 }
             }
         }
@@ -150,6 +179,8 @@ actor SessionScanner {
             title: title,
             lastActivity: lastTimestamp ?? modified,
             messageCount: messageCount,
+            activity: trail.last?.label,
+            trail: trail,
             fileURL: url
         )
     }
@@ -175,6 +206,70 @@ actor SessionScanner {
         // are not prompts the human typed, so they make poor titles.
         if text.hasPrefix("<") { return nil }
         return text
+    }
+
+    /// The ordered actions in an assistant message: one verb phrase per tool call, or a single
+    /// prose snippet when the message is plain text. Empty when there is nothing usable to
+    /// show. The row's single `activity` label is just the last element across the transcript.
+    private static func activityLabels(from message: Any?) -> [String] {
+        guard let message = message as? [String: Any] else { return [] }
+        if let blocks = message["content"] as? [[String: Any]] {
+            let tools = blocks
+                .filter { ($0["type"] as? String) == "tool_use" }
+                .compactMap { toolActivity(name: $0["name"] as? String, input: $0["input"] as? [String: Any]) }
+            if !tools.isEmpty { return tools }
+            // No tool call — fall back to the message's own text.
+            let text = blocks
+                .filter { ($0["type"] as? String) == "text" }
+                .compactMap { $0["text"] as? String }
+                .joined(separator: " ")
+            return snippet(text).map { [$0] } ?? []
+        } else if let string = message["content"] as? String {
+            return snippet(string).map { [$0] } ?? []
+        }
+        return []
+    }
+
+    /// Renders a Claude Code tool call as a short verb phrase for the activity line. Pulls the
+    /// one identifying argument per tool (file, command, pattern) and falls back to the tool
+    /// name; MCP tools collapse to a generic label since their names are namespaced noise.
+    private static func toolActivity(name: String?, input: [String: Any]?) -> String? {
+        guard let name, !name.isEmpty else { return nil }
+        let file = (input?["file_path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+        switch name {
+        case "Edit", "Write", "MultiEdit", "NotebookEdit":
+            return file.map { "Editing \($0)" } ?? "Editing files"
+        case "Read":
+            return file.map { "Reading \($0)" } ?? "Reading a file"
+        case "Bash":
+            if let cmd = (input?["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cmd.isEmpty {
+                return "Running: \(condense(cmd, limit: 48))"
+            }
+            return "Running a command"
+        case "Grep", "Glob":
+            if let pattern = (input?["pattern"] as? String), !pattern.isEmpty {
+                return "Searching \(condense(pattern, limit: 40))"
+            }
+            return "Searching the codebase"
+        case "Task":
+            return "Delegating to a subagent"
+        case "WebFetch", "WebSearch":
+            return "Searching the web"
+        case "TodoWrite":
+            return "Updating its task list"
+        default:
+            return name.hasPrefix("mcp__") ? "Using an MCP tool" : "Using \(name)"
+        }
+    }
+
+    /// Trims a text block to a single tidy snippet for the activity line, discarding the
+    /// synthetic tag-wrapped turns (tool results, slash-command envelopes) that make poor
+    /// activity labels. Returns nil when nothing usable remains.
+    private static func snippet(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, !text.hasPrefix("<") else { return nil }
+        return condense(text, limit: 60)
     }
 
     /// Collapses whitespace and truncates so a title is a single tidy line.

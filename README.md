@@ -140,6 +140,32 @@ focus keeps working (just less precisely).
 The popover is taller-adjustable — drag the handle on its bottom edge to grow it downward —
 and the height is remembered across launches.
 
+### Multi-agent dashboard
+
+For running several Claude Code sessions at once, the session list doubles as a read-only
+dashboard — a legible overview of your parallel agents. It stays true to the notify-only
+contract: everything here is *awareness*, derived from the same hooks and transcripts
+AgentBar already reads. There is no reply channel, no control, nothing that answers a prompt
+or steers an agent.
+
+- **Summary strip.** A pinned header counts your sessions by state: `● need you`,
+  `⚙ working`, `○ idle`.
+- **Grouped roster.** Rows are grouped under `NEEDS YOU` / `WORKING` / `IDLE` headers, so
+  what needs you floats to the top.
+- **Current activity.** Each session that isn't waiting on you shows what it's doing — the
+  last tool it ran (`Editing QueueStore.swift`, `Running: swift build`, `Searching …`) or a
+  snippet of its last message, read from the transcript.
+- **Working timer.** Actively-working sessions show how long the current turn has been
+  running (`working 2m 13s`), alongside the existing `waiting …` timer on prompts.
+- **Activity trail.** A `trail` keycap on each row expands a read-only history of its recent
+  actions, newest-first with timestamps — the closest thing to watching an agent work,
+  without attaching to it.
+- **Live-only filter.** The filter button in the title bar hides quiet historical sessions,
+  leaving just the ones a terminal is plausibly still open on.
+
+See [`docs/paseo-feature-analysis.md`](docs/paseo-feature-analysis.md) for how this compares
+to Paseo and why AgentBar stays read-only.
+
 ## Development
 
 Building requires **macOS 14+ with the Xcode command line tools** (`xcode-select

@@ -214,22 +214,25 @@ struct DashedRule: View {
     }
 }
 
-// MARK: - Waiting label
+// MARK: - Elapsed label
 
-/// A live "waiting …" label that ticks up from a start time, shown on attention rows so you
-/// can see at a glance how long a prompt has been sitting unanswered. Driven by a
-/// `TimelineView` (not a repeating animation), so it recomputes on a light interval without
-/// leaking an animation transaction into the `MenuBarExtra(.window)` popover. Stays hidden
-/// for the first couple of seconds so fresh prompts don't flash a "waiting 0s".
-struct WaitingLabel: View {
+/// A live "`verb` …" label that ticks up from a start time — "waiting 12s" on an attention
+/// row so you can see how long a prompt has sat unanswered, or "working 12s" on an active
+/// row so the turn's runtime is visible at a glance. Driven by a `TimelineView` (not a
+/// repeating animation), so it recomputes on a light interval without leaking an animation
+/// transaction into the `MenuBarExtra(.window)` popover. Stays hidden for the first couple of
+/// seconds so a fresh prompt or turn doesn't flash a "… 0s".
+struct ElapsedLabel: View {
     let since: Date
     let color: Color
+    /// The verb the elapsed time is prefixed with (e.g. "waiting", "working").
+    var verb: String = "waiting"
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed = context.date.timeIntervalSince(since)
             if elapsed >= 2 {
-                Text("waiting \(DurationFormat.short(elapsed))")
+                Text("\(verb) \(DurationFormat.short(elapsed))")
                     .font(feedFont(10))
                     .foregroundStyle(color.opacity(0.75))
             }
