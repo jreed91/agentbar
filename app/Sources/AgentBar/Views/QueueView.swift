@@ -694,11 +694,6 @@ struct QueueView: View {
 
     // MARK: - Session meta (model · mode · context)
 
-    /// The nominal context window used for the usage percentage. Claude Code's standard
-    /// models expose a 200k-token window; the readout is an approximation, so a session on a
-    /// larger window simply reads as a smaller fraction rather than being wrong.
-    private static let contextWindow = 200_000
-
     /// The model · mode · context-usage line under a row's header. Renders only the pieces we
     /// actually know, and nothing at all when a row (e.g. a Copilot session) carries none.
     @ViewBuilder
@@ -722,9 +717,9 @@ struct QueueView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 if let tokens = row.contextTokens {
-                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens))%")
+                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens, model: row.model))%")
                         .font(feedFont(9.5))
-                        .foregroundStyle(contextColor(tokens))
+                        .foregroundStyle(contextColor(tokens, model: row.model))
                 }
                 Spacer(minLength: 0)
             }
@@ -769,15 +764,39 @@ struct QueueView: View {
         tokens >= 1000 ? "\(Int((Double(tokens) / 1000).rounded()))k" : "\(tokens)"
     }
 
-    /// Context usage as a whole-number percent of the nominal window, clamped to 0…100.
-    private func contextPercent(_ tokens: Int) -> Int {
-        max(0, min(100, Int((Double(tokens) / Double(Self.contextWindow) * 100).rounded())))
+    /// The nominal context window (tokens) for a model — the denominator of the usage percent.
+    /// Claude's models are 200k-token windows, except Sonnet 4 and newer, which can run a
+    /// 1M-token window under a beta flag. The transcript doesn't record whether that beta was
+    /// active, so the large window is assumed only once usage has actually crossed the 200k
+    /// tier (a 200k model can never exceed its window, so anything above 200k must be on the
+    /// large one); below that, 200k is the right base for the non-beta default.
+    private func contextWindow(for model: String?, usedTokens: Int) -> Int {
+        let standard = 200_000, large = 1_000_000
+        let name = (model ?? "").lowercased()
+        let supportsLargeWindow = name.contains("sonnet") && !isPre4Sonnet(name)
+        if supportsLargeWindow, usedTokens > standard { return large }
+        return standard
+    }
+
+    /// Sonnet generations that predate the 1M-token context (Sonnet 3 / 3.5 / 3.7). Sonnet 4
+    /// and newer can run the large window.
+    private func isPre4Sonnet(_ name: String) -> Bool {
+        name.contains("sonnet-3")
+            || name.contains("claude-3-sonnet")
+            || name.contains("claude-3-5-sonnet")
+            || name.contains("claude-3-7-sonnet")
+    }
+
+    /// Context usage as a whole-number percent of the model's window, clamped to 0…100.
+    private func contextPercent(_ tokens: Int, model: String?) -> Int {
+        let window = contextWindow(for: model, usedTokens: tokens)
+        return max(0, min(100, Int((Double(tokens) / Double(window) * 100).rounded())))
     }
 
     /// Dim under three-quarters full, amber past that, red as it approaches the window — a
     /// quiet at-a-glance warning that a session is running low on context.
-    private func contextColor(_ tokens: Int) -> Color {
-        let percent = contextPercent(tokens)
+    private func contextColor(_ tokens: Int, model: String?) -> Color {
+        let percent = contextPercent(tokens, model: model)
         if percent >= 90 { return .stPermission }
         if percent >= 75 { return .feedAmberText }
         return .feedDim

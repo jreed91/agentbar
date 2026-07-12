@@ -172,7 +172,9 @@ active; quiet sessions are tagged `IDLE`. For Claude Code sessions each row also
 meta line — the **model** the latest turn ran on, the session's **permission mode**
 (`default` / `plan` / `accept edits` / `bypass`), and its **context usage** (`ctx 48k · 24%`,
 tinting amber then red as the window fills) — all read from Claude Code's own transcript and
-hook events.
+hook events. The usage percentage is sized to the model's context window (200k for most, and
+1M for Sonnet 4+ once a session's usage crosses the 200k tier, since that beta window isn't
+recorded in the transcript).
 
 Live hook events fold into the matching row by session id: a session waiting on a question
 or permission tags itself `QUESTION` / `PERMISSION` and shows the prompt (and any command)
