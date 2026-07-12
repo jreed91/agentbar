@@ -186,7 +186,7 @@ actor SessionScanner {
                         if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
                             model = m
                         }
-                        if let tokens = contextTokens(from: message["usage"]) {
+                        if let tokens = parseContextTokens(from: message["usage"]) {
                             contextTokens = tokens
                         }
                     }
@@ -218,7 +218,7 @@ actor SessionScanner {
     /// input plus both cache tiers — to approximate how full the context window is. Returns nil
     /// when the block is missing or carries no positive total. `output_tokens` is excluded: it
     /// is the reply, not part of the prompt the model read this turn.
-    private static func contextTokens(from usage: Any?) -> Int? {
+    private static func parseContextTokens(from usage: Any?) -> Int? {
         guard let usage = usage as? [String: Any] else { return nil }
         func count(_ key: String) -> Int { (usage[key] as? Int) ?? 0 }
         let total = count("input_tokens")
