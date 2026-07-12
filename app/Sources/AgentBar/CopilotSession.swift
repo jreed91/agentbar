@@ -163,6 +163,10 @@ actor CopilotSessionScanner {
             messageCount: messageCount,
             activity: trail.last?.label,
             trail: trail,
+            // Copilot CLI's event log doesn't expose a comparable model / token-usage record,
+            // so these stay nil and the row simply omits the model / context chips.
+            model: nil,
+            contextTokens: nil,
             fileURL: fileURL,
             source: .copilot
         )

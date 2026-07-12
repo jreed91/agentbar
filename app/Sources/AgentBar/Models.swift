@@ -118,6 +118,10 @@ struct HookPayload {
     let toolInput: [String: Any]?
     let message: String?
     let hookEventName: String?
+    /// The session's active permission mode (`default`, `acceptEdits`, `plan`,
+    /// `bypassPermissions`), when Claude Code carries it on the hook input. Tracked per
+    /// session so the row can show the mode a session is running under; nil when absent.
+    let permissionMode: String?
     /// Final assistant text of the turn (Stop / SubagentStop).
     let lastAssistantMessage: String?
     /// Why a session ended (SessionEnd) or a turn failed (StopFailure).
@@ -140,6 +144,7 @@ struct HookPayload {
         self.toolInput = (dict["tool_input"] as? [String: Any]) ?? (dict["toolInput"] as? [String: Any])
         self.message = dict["message"] as? String
         self.hookEventName = HookPayload.firstString(dict, "hook_event_name", "hookEventName")
+        self.permissionMode = HookPayload.firstString(dict, "permission_mode", "permissionMode")
         self.lastAssistantMessage = HookPayload.firstString(dict, "last_assistant_message", "lastAssistantMessage")
         self.endReason = HookPayload.firstString(dict, "end_reason", "reason", "endReason")
         self.errorType = HookPayload.firstString(dict, "error_type", "errorType")

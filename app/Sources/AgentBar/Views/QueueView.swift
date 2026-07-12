@@ -34,6 +34,16 @@ struct QueueView: View {
     /// nothing here drives a session — it only reveals more of what already happened.
     @State private var expandedSessions: Set<String> = []
 
+    /// The row currently selected for keyboard navigation, by session id. Nil when nothing is
+    /// selected; the first ↓/j selects the top row. Drives the row highlight and is the target
+    /// of the keyboard actions (focus / dismiss / mute / trail).
+    @State private var selectedRowID: String?
+
+    /// The installed local key-event monitor, retained so it can be torn down when the popover
+    /// closes. Lets ↑/↓ (or j/k) walk the roster and ↵/d/m/→ run the selected row's actions
+    /// from the keyboard while the popover is open.
+    @State private var keyMonitor: Any?
+
     /// When true the feed hides quiet historical sessions (idle transcripts with no recent
     /// hook activity), leaving only the sessions a terminal is plausibly still open on.
     /// Persisted so the preference survives relaunch.
@@ -95,7 +105,11 @@ struct QueueView: View {
         .background(WindowReader(trigger: popoverHeight) { window in
             pinTop(of: window)
         })
-        .onDisappear { anchorTop = nil }
+        .onAppear { installKeyMonitor() }
+        .onDisappear {
+            anchorTop = nil
+            removeKeyMonitor()
+        }
     }
 
     /// Keeps the popover's top edge under the menu-bar icon as its height changes: capture
@@ -255,18 +269,27 @@ struct QueueView: View {
             if sections.isEmpty {
                 filteredEmptyState
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(sections) { section in
-                            groupHeader(section.group, count: section.rows.count)
-                            ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
-                                if index > 0 { DashedRule() }
-                                sessionLine(row)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(sections) { section in
+                                groupHeader(section.group, count: section.rows.count)
+                                    .padding(.horizontal, 6)
+                                ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
+                                    if index > 0 { DashedRule().padding(.horizontal, 6) }
+                                    sessionLine(row).id(row.id)
+                                }
                             }
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 2)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 2)
+                    // Keep the keyboard-selected row on screen as selection walks the list. No
+                    // animation: an implicit one here would leak into the MenuBarExtra window.
+                    .onChange(of: selectedRowID) { _, id in
+                        guard let id else { return }
+                        proxy.scrollTo(id, anchor: .center)
+                    }
                 }
             }
         }
@@ -410,6 +433,10 @@ struct QueueView: View {
                 }
             }
 
+            // Model · permission mode · context-window usage, read from Claude Code's own
+            // transcript and hook events. Only the parts we actually know are shown.
+            metaLine(row)
+
             // The session's title (first prompt / summary) — clickable to focus its terminal.
             Button {
                 TerminalFocus.focus(hint: row.terminalHint, cwd: row.cwd)
@@ -472,6 +499,24 @@ struct QueueView: View {
             }
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .background {
+            if row.id == selectedRowID {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.feedGreen.opacity(0.10))
+            }
+        }
+        .overlay(alignment: .leading) {
+            if row.id == selectedRowID {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.feedGreen)
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+            }
+        }
+        .contentShape(Rectangle())
+        // A click anywhere on the row (outside its buttons) selects it for the keyboard.
+        .onTapGesture { selectedRowID = row.id }
     }
 
     /// The "→ …" ask line(s) for an attention item. A multi-question `AskUserQuestion`
@@ -595,7 +640,15 @@ struct QueueView: View {
             Text("◉ watching \(queue.sessionCount) \(queue.sessionCount == 1 ? "session" : "sessions") · notify-only")
                 .font(feedFont(11, .medium))
                 .foregroundStyle(Color.feedGreen)
-            Spacer(minLength: 0)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 6)
+            if !showHistory, !queue.sessionRows.isEmpty {
+                Text("↑↓ ↵ d m")
+                    .font(feedFont(9))
+                    .foregroundStyle(Color.feedDim)
+                    .help("Keyboard: ↑/↓ or j/k move · ↵ focus · d dismiss · m mute · → or t trail · esc clear")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -625,6 +678,211 @@ struct QueueView: View {
     private func projectName(_ cwd: String) -> String {
         let name = URL(fileURLWithPath: cwd).lastPathComponent
         return name.isEmpty ? cwd : name
+    }
+
+    // MARK: - Session meta (model · mode · context)
+
+    /// The nominal context window used for the usage percentage. Claude Code's standard
+    /// models expose a 200k-token window; the readout is an approximation, so a session on a
+    /// larger window simply reads as a smaller fraction rather than being wrong.
+    private static let contextWindow = 200_000
+
+    /// The model · mode · context-usage line under a row's header. Renders only the pieces we
+    /// actually know, and nothing at all when a row (e.g. a Copilot session) carries none.
+    @ViewBuilder
+    private func metaLine(_ row: SessionRow) -> some View {
+        if row.model != nil || row.mode != nil || row.contextTokens != nil {
+            HStack(spacing: 7) {
+                if let model = row.model {
+                    Text(prettyModel(model))
+                        .font(feedFont(9.5))
+                        .foregroundStyle(Color.feedSub)
+                        .lineLimit(1)
+                }
+                if let mode = row.mode {
+                    Text(prettyMode(mode))
+                        .font(feedFont(8.5, .bold))
+                        .tracking(0.3)
+                        .foregroundStyle(Color.feedInk)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(modeColor(mode))
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                }
+                if let tokens = row.contextTokens {
+                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens))%")
+                        .font(feedFont(9.5))
+                        .foregroundStyle(contextColor(tokens))
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// Trims a raw model id (`claude-sonnet-4-5-20250929`) to a compact label (`sonnet-4-5`):
+    /// drop the `claude-` prefix and any trailing date/build stamp.
+    private func prettyModel(_ raw: String) -> String {
+        var name = raw
+        if name.hasPrefix("claude-") { name.removeFirst("claude-".count) }
+        if let stamp = name.range(of: "-[0-9]{6,}$", options: .regularExpression) {
+            name = String(name[name.startIndex..<stamp.lowerBound])
+        }
+        return name.isEmpty ? raw : name
+    }
+
+    /// A short, readable label for a permission mode.
+    private func prettyMode(_ raw: String) -> String {
+        switch raw {
+        case "default": return "default"
+        case "plan": return "plan"
+        case "acceptEdits": return "accept edits"
+        case "bypassPermissions": return "bypass"
+        default: return raw
+        }
+    }
+
+    /// The accent a permission-mode pill is filled with: plan reads as working-blue, accept
+    /// edits as done-green, bypass as the loud permission-red, default stays dim.
+    private func modeColor(_ raw: String) -> Color {
+        switch raw {
+        case "plan": return .stWorking
+        case "acceptEdits": return .stDone
+        case "bypassPermissions": return .stPermission
+        default: return .feedDim
+        }
+    }
+
+    /// A compact token count: `48k`, `1k`, or the raw number under a thousand.
+    private func formatTokens(_ tokens: Int) -> String {
+        tokens >= 1000 ? "\(Int((Double(tokens) / 1000).rounded()))k" : "\(tokens)"
+    }
+
+    /// Context usage as a whole-number percent of the nominal window, clamped to 0…100.
+    private func contextPercent(_ tokens: Int) -> Int {
+        max(0, min(100, Int((Double(tokens) / Double(Self.contextWindow) * 100).rounded())))
+    }
+
+    /// Dim under three-quarters full, amber past that, red as it approaches the window — a
+    /// quiet at-a-glance warning that a session is running low on context.
+    private func contextColor(_ tokens: Int) -> Color {
+        let percent = contextPercent(tokens)
+        if percent >= 90 { return .stPermission }
+        if percent >= 75 { return .feedAmberText }
+        return .feedDim
+    }
+
+    // MARK: - Keyboard navigation
+
+    /// The rows in the exact order they appear in the grouped feed, so ↑/↓ walk the list as
+    /// the eye reads it (needs you → working → idle), matching `feed`.
+    private var orderedRows: [SessionRow] {
+        groupedRows(displayedRows).flatMap(\.rows)
+    }
+
+    /// The currently keyboard-selected row, or nil when the selection is empty or stale (its
+    /// session has since left the roster).
+    private var selectedRow: SessionRow? {
+        guard let id = selectedRowID else { return nil }
+        return orderedRows.first { $0.id == id }
+    }
+
+    /// Installs a local key-event monitor so the popover can be driven from the keyboard while
+    /// it is open. Returning nil from the handler consumes the event; returning the event lets
+    /// it pass through (so ⌘-shortcuts and anything we don't handle behave normally).
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        // Local key-down monitors are always delivered on the main thread, so we can assert
+        // main-actor isolation and run the handler synchronously — that lets it touch the
+        // (main-actor) queue and focus the terminal while still returning nil/event to decide
+        // whether the key is swallowed.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            MainActor.assumeIsolated {
+                handleKey(event) ? nil : event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    /// Routes a key press to a navigation move or a row action. Returns true when the event was
+    /// handled (and should be swallowed). Only acts on the live session feed — the history view
+    /// and any modifier-chorded key are left alone.
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard !showHistory else { return false }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.isDisjoint(with: [.command, .control, .option]) else { return false }
+
+        let rows = orderedRows
+        switch event.keyCode {
+        case 125: moveSelection(by: 1, in: rows); return true    // ↓
+        case 126: moveSelection(by: -1, in: rows); return true   // ↑
+        case 36, 76: return focusSelected(in: rows)              // return / enter
+        case 124: return toggleTrailSelected()                   // →
+        case 53:                                                 // esc
+            if selectedRowID != nil { selectedRowID = nil; return true }
+            return false
+        default: break
+        }
+
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        switch key {
+        case "j": moveSelection(by: 1, in: rows); return true
+        case "k": moveSelection(by: -1, in: rows); return true
+        case "d": return dismissSelected()
+        case "m": return muteSelected()
+        case "t": return toggleTrailSelected()
+        default: return false
+        }
+    }
+
+    /// Moves the selection by `delta` rows, clamped to the ends. With nothing selected yet, a
+    /// downward move lands on the first row and an upward move on the last.
+    private func moveSelection(by delta: Int, in rows: [SessionRow]) {
+        guard !rows.isEmpty else { selectedRowID = nil; return }
+        guard let current = selectedRowID, let index = rows.firstIndex(where: { $0.id == current }) else {
+            selectedRowID = (delta > 0 ? rows.first : rows.last)?.id
+            return
+        }
+        let next = max(0, min(rows.count - 1, index + delta))
+        selectedRowID = rows[next].id
+    }
+
+    /// ↵ / click-equivalent: bring the selected row's terminal forward. With nothing selected,
+    /// selects and focuses the first row so a bare ↵ does the obvious thing.
+    private func focusSelected(in rows: [SessionRow]) -> Bool {
+        guard let row = selectedRow ?? rows.first else { return true }
+        selectedRowID = row.id
+        TerminalFocus.focus(hint: row.terminalHint, cwd: row.cwd)
+        return true
+    }
+
+    /// `d`: dismiss the selected row's live attention rows, mirroring the row's dismiss keycap.
+    private func dismissSelected() -> Bool {
+        if let row = selectedRow, row.liveItems.contains(where: { $0.needsResponse }) {
+            dismissLive(row)
+        }
+        return true
+    }
+
+    /// `m`: mute / unmute the selected row's project, mirroring the row's mute keycap.
+    private func muteSelected() -> Bool {
+        if let row = selectedRow, !row.cwd.isEmpty {
+            queue.toggleMute(row.cwd)
+        }
+        return true
+    }
+
+    /// `→` / `t`: expand or collapse the selected row's read-only activity trail.
+    private func toggleTrailSelected() -> Bool {
+        if let row = selectedRow, !row.trail.isEmpty {
+            toggleTrail(row.id)
+        }
+        return true
     }
 }
 

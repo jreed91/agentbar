@@ -119,11 +119,14 @@ Every event is a notification — AgentBar never intercepts or answers a prompt 
 
 Questions, permissions, and MCP input requests badge the icon and stay in the popover
 until they're resolved. There is no reply channel back into the session, so AgentBar can't
-clear them the instant you answer — instead it watches for the session to make progress
-(the next tool run, or the turn finishing) and clears them then, which in practice is a
-beat after you respond in the terminal. You can also dismiss any item by hand. Informational
-rows auto-expire. Every event has a toggle in Settings, so chatty ones (subagent and
-session-end in particular) can be muted individually.
+clear them the instant you answer — instead it watches for the session to make progress and
+clears them then, which in practice is a beat after you respond in the terminal. That
+progress can be the next tool run, the turn finishing, the *next* prompt appearing, or a new
+turn starting — a session can only get that far once you've answered whatever it was blocked
+on, so an answered permission clears itself rather than lingering behind its successor. You
+can also dismiss any item by hand. Informational rows auto-expire. Every event has a toggle
+in Settings, so chatty ones (subagent and session-end in particular) can be muted
+individually.
 
 ### Banner actions, mute & Do Not Disturb
 
@@ -165,7 +168,11 @@ The roster is read straight from Claude Code's on-disk transcripts
 if they started before AgentBar was running or live in a terminal that never sent a hook. A
 project you have run many times collapses to a single row for its latest session. Each row
 shows the project, its first prompt as a title, a message count, and when it was last
-active; quiet sessions are tagged `IDLE`.
+active; quiet sessions are tagged `IDLE`. For Claude Code sessions each row also carries a
+meta line — the **model** the latest turn ran on, the session's **permission mode**
+(`default` / `plan` / `accept edits` / `bypass`), and its **context usage** (`ctx 48k · 24%`,
+tinting amber then red as the window fills) — all read from Claude Code's own transcript and
+hook events.
 
 Live hook events fold into the matching row by session id: a session waiting on a question
 or permission tags itself `QUESTION` / `PERMISSION` and shows the prompt (and any command)
@@ -183,6 +190,15 @@ focus keeps working (just less precisely).
 
 The popover is taller-adjustable — drag the handle on its bottom edge to grow it downward —
 and the height is remembered across launches.
+
+### Keyboard
+
+The list is fully keyboard-drivable while the popover is open. **↑/↓** (or **j/k**) walk the
+rows in reading order — needs-you first — highlighting the selected one and scrolling it into
+view. The selected row's actions are one keystroke away, mirroring its keycaps: **↵** focuses
+its terminal, **d** dismisses a live prompt, **m** mutes/unmutes the project, and **→** (or
+**t**) expands its activity trail. **Esc** clears the selection. A click on a row selects it
+too, so mouse and keyboard stay in sync.
 
 ### Multi-agent dashboard
 

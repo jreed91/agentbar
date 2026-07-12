@@ -36,6 +36,15 @@ struct ClaudeSession: Identifiable, Sendable, Hashable {
     /// The most recent actions in the session, oldest-first and capped, for the drill-in's
     /// read-only activity trail. `activity` is just this trail's last label.
     let trail: [ActivityEntry]
+    /// The model the session's most recent assistant turn ran on, from the transcript's
+    /// `message.model` (e.g. `claude-opus-4-...`). Nil when no assistant turn carried one
+    /// (a brand-new session, or a Copilot session where the scanner doesn't record it).
+    let model: String?
+    /// Approximate context-window usage: the total input tokens (fresh + cache read + cache
+    /// creation) the model processed on the session's most recent assistant turn, read from
+    /// `message.usage`. This is the size of the prompt that turn saw — the closest read-only
+    /// analog to Claude Code's own context gauge. Nil when no usage was found.
+    let contextTokens: Int?
     /// The transcript file, kept so the row can reveal it in Finder.
     let fileURL: URL
     /// Which agent this session belongs to. Set by the scanner that discovered it —
@@ -136,6 +145,8 @@ actor SessionScanner {
         var lastTimestamp: Date?
         var messageCount = 0
         var trail: [ActivityEntry] = []
+        var model: String?
+        var contextTokens: Int?
 
         for line in contents.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
@@ -168,6 +179,17 @@ actor SessionScanner {
                         trail.append(ActivityEntry(at: stamp, label: label))
                     }
                     if trail.count > trailCap { trail.removeFirst(trail.count - trailCap) }
+                    // Track the model and context size from the newest assistant turn. Entries
+                    // are chronological, so the last write wins — a live snapshot of what this
+                    // session is running on and how full its context is.
+                    if let message = entry["message"] as? [String: Any] {
+                        if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
+                            model = m
+                        }
+                        if let tokens = contextTokens(from: message["usage"]) {
+                            contextTokens = tokens
+                        }
+                    }
                 }
             }
         }
@@ -185,9 +207,24 @@ actor SessionScanner {
             messageCount: messageCount,
             activity: trail.last?.label,
             trail: trail,
+            model: model,
+            contextTokens: contextTokens,
             fileURL: url,
             source: .claude
         )
+    }
+
+    /// Sums the input-side token counts from an assistant message's `usage` block — the fresh
+    /// input plus both cache tiers — to approximate how full the context window is. Returns nil
+    /// when the block is missing or carries no positive total. `output_tokens` is excluded: it
+    /// is the reply, not part of the prompt the model read this turn.
+    private static func contextTokens(from usage: Any?) -> Int? {
+        guard let usage = usage as? [String: Any] else { return nil }
+        func count(_ key: String) -> Int { (usage[key] as? Int) ?? 0 }
+        let total = count("input_tokens")
+            + count("cache_read_input_tokens")
+            + count("cache_creation_input_tokens")
+        return total > 0 ? total : nil
     }
 
     /// Extracts plain text from a message's `content`, which is either a string or an array

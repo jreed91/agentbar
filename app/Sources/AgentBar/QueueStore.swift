@@ -36,6 +36,15 @@ struct SessionRow: Identifiable {
     /// The session's recent-activity trail (from the transcript), oldest-first, for the
     /// read-only drill-in. Empty for a synthesized live-only row not yet scanned from disk.
     let trail: [ActivityEntry]
+    /// The model the session's latest turn ran on (from the transcript), for the row's meta
+    /// line. Nil when unknown.
+    let model: String?
+    /// Approximate context-window tokens in use on the latest turn (from the transcript), for
+    /// the row's context gauge. Nil when unknown.
+    let contextTokens: Int?
+    /// The session's permission mode (`default`, `acceptEdits`, `plan`, `bypassPermissions`),
+    /// captured from its hook events. Nil until a hook carrying it has been seen.
+    let mode: String?
 }
 
 /// At-a-glance counts for the dashboard summary strip, bucketed from the merged session
@@ -82,6 +91,11 @@ final class QueueStore: ObservableObject {
     /// turn (`stop`) can report how long it took. Cleared when the turn ends or the session
     /// goes away.
     private var turnStart: [String: Date] = [:]
+
+    /// Per-session permission mode, from the `permission_mode` carried on hook events. Kept so
+    /// the row can show what mode a session is running under even between events; cleared when
+    /// the session ends.
+    private var sessionMode: [String: String] = [:]
 
     /// A bounded, newest-first log of recently surfaced events, for the popover's history
     /// view — "what happened while I was away". Purely informational and capped at
@@ -249,7 +263,10 @@ final class QueueStore: ObservableObject {
                 isLive: isLive(session.id, now: now) || !live.isEmpty || fresh,
                 activity: session.activity,
                 workingSince: turnStart[session.id],
-                trail: session.trail
+                trail: session.trail,
+                model: session.model,
+                contextTokens: session.contextTokens,
+                mode: sessionMode[session.id]
             ))
         }
 
@@ -270,7 +287,10 @@ final class QueueStore: ObservableObject {
                 isLive: true,
                 activity: nil,
                 workingSince: turnStart[sessionID],
-                trail: []
+                trail: [],
+                model: nil,
+                contextTokens: nil,
+                mode: sessionMode[sessionID]
             ))
         }
 
@@ -352,6 +372,12 @@ final class QueueStore: ObservableObject {
             pruneSessions()
         }
 
+        // Remember the session's permission mode whenever a hook carries it, so the row's meta
+        // line can show it even on events (and quiet stretches) that don't.
+        if let mode = parsed.permissionMode, !parsed.sessionID.isEmpty {
+            sessionMode[parsed.sessionID] = mode
+        }
+
         // A turn just started — remember when, so the matching `stop` can report duration.
         // Recorded independently of the "Claude is thinking" toggle so timing works even
         // when that banner is muted.
@@ -415,13 +441,11 @@ final class QueueStore: ObservableObject {
             }
 
         case .working:
+            // A new user turn has begun (UserPromptSubmit). Claude only runs this hook once it
+            // is no longer blocked on you, so any prompt still shown for this session was
+            // answered in the terminal — clear it before showing that Claude is thinking again.
+            clearAttention(for: parsed.sessionID)
             guard settingEnabled("notifyWorking") else { return }
-            // A turn just started — Claude is thinking, not waiting. Skip the working row
-            // for a session that already has something waiting on you (question/permission);
-            // otherwise show a single live WORKING row, replacing any prior status.
-            if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
-                return
-            }
             enqueueWorking(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
@@ -480,6 +504,7 @@ final class QueueStore: ObservableObject {
             clearAttention(for: parsed.sessionID)
             sessionsLastSeen[parsed.sessionID] = nil
             turnStart[parsed.sessionID] = nil
+            sessionMode[parsed.sessionID] = nil
             guard settingEnabled("notifySessionEnd") else { return }
             let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The \(source.displayName) session ended."
             enqueueInfo(PendingItem(
@@ -505,10 +530,16 @@ final class QueueStore: ObservableObject {
     }
 
     /// Enqueues an attention item (Claude is waiting in the terminal). It stays until you
-    /// dismiss it — there is no reply channel back into the session, so nothing auto-clears
-    /// it, but it also never blocks the session. Claude is now waiting rather than thinking,
-    /// so any live status row for the session is superseded.
+    /// answer in the terminal (a later hook clears it) or dismiss it by hand; it never blocks
+    /// the session. Claude is now waiting rather than thinking, so any live status row is
+    /// superseded.
+    ///
+    /// Claude blocks the terminal on one prompt at a time, so the arrival of a new prompt for
+    /// this session means whatever was shown before it has already been answered — clear the
+    /// stale attention rows (and their banners) before adding this one, so an answered
+    /// permission or question doesn't linger behind its successor.
     private func enqueueAttention(_ item: PendingItem) {
+        clearAttention(for: item.sessionID)
         clearStatusRows(for: item.sessionID)
         items.append(item)
         recordHistory(item)

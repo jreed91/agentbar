@@ -98,6 +98,18 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(payload.endReason, "logout")
     }
 
+    func testPermissionModeParsedFromBothSpellings() {
+        XCTAssertEqual(
+            HookPayload(data: Data(#"{"permission_mode":"plan"}"#.utf8)).permissionMode,
+            "plan"
+        )
+        XCTAssertEqual(
+            HookPayload(data: Data(#"{"permissionMode":"acceptEdits"}"#.utf8)).permissionMode,
+            "acceptEdits"
+        )
+        XCTAssertNil(HookPayload(data: Data("{}".utf8)).permissionMode)
+    }
+
     // MARK: - questions(from:)
 
     func testQuestionsParsesOptionsAndMultiSelect() {
