@@ -10,6 +10,9 @@ const C = {
   moodPermission: '#ff6b5f', moodQuestion: '#ffce6b',
   kbdDeny: '#3a4a40', kbdFocus: '#2a5a3a',
   shDeny: '#1a2a20', shFocus: '#143020',
+  // Source pill accents (design `AgentSource.tagColor`): phosphor green for Claude,
+  // working-blue for Copilot, so a mixed roster reads at a glance.
+  srcClaude: '#46e07f', srcCopilot: '#0a84ff',
 };
 
 const CSS = `
@@ -78,7 +81,14 @@ body { font-family: "DejaVu Sans Mono", ui-monospace, monospace; -webkit-font-sm
 .proj { font-size: 12px; font-weight: 600; color: ${C.head}; white-space: nowrap; }
 .msgs { font-size: 10px; color: ${C.dim}; }
 .tag { font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; color: ${C.ink}; padding: 2px 4px; border-radius: 2px; }
+.src { font-size: 8.5px; font-weight: 700; letter-spacing: 0.5px; padding: 1.5px 4px; border-radius: 2px; border: 1px solid; }
 .title2 { font-size: 11px; color: ${C.text}; }
+
+/* Session meta: model · permission-mode pill · context-window usage */
+.meta { display: flex; align-items: center; gap: 7px; }
+.meta .model { font-size: 9.5px; color: ${C.sub}; white-space: nowrap; }
+.meta .mode { font-size: 8.5px; font-weight: 700; letter-spacing: 0.3px; color: ${C.ink}; padding: 1px 4px; border-radius: 2px; }
+.meta .ctx { font-size: 9.5px; white-space: nowrap; }
 .ask { font-size: 11px; font-weight: 500; }
 .activity { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .elapsed { font-size: 10px; }
@@ -113,8 +123,9 @@ body { font-family: "DejaVu Sans Mono", ui-monospace, monospace; -webkit-font-sm
 .hline .sum { font-size: 11px; color: ${C.text}; }
 
 /* prompt bar */
-.promptbar { padding: 9px 12px; border-top: 1px solid rgba(70,224,127,0.22); }
+.promptbar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-top: 1px solid rgba(70,224,127,0.22); }
 .promptbar .t { font-size: 11px; font-weight: 500; color: ${C.green}; }
+.promptbar .keys { font-size: 9px; color: ${C.dim}; white-space: nowrap; }
 
 /* resize handle */
 .handle { display: flex; justify-content: center; padding: 4px 0; }
@@ -146,11 +157,29 @@ function statusColor(s) {
   return { PERMISSION: C.stPermission, ERROR: C.stPermission, QUESTION: C.stQuestion, WORKING: C.stWorking, DONE: C.stDone, IDLE: C.dim }[s];
 }
 function tag(s) { return `<span class="tag" style="background:${statusColor(s)}">${s}</span>`; }
+// Source pill (CLAUDE / COPILOT) — outlined so it sits quietly beside the filled status tag.
+function sourceTag(src) {
+  const col = src === 'COPILOT' ? C.srcCopilot : C.srcClaude;
+  return `<span class="src" style="color:${col}; border-color:${col}80">${src}</span>`;
+}
 function keycap(key, lab, style) { return `<span class="kc"><span class="key ${style}">${key}</span><span class="lab">${lab}</span></span>`; }
+
+// The model · mode · context-usage meta line under a row's header. Mirrors QueueView.metaLine:
+// only the pieces we know are shown, and a Copilot row (no model/mode/ctx) renders nothing.
+const modeColor = { 'plan': C.stWorking, 'accept edits': C.stDone, 'bypass': C.stPermission, 'default': C.dim };
+function ctxColor(pct) { return pct >= 90 ? C.stPermission : pct >= 75 ? C.amberText : C.dim; }
+function metaLine(o) {
+  if (!o.model && !o.mode && o.ctx == null) return '';
+  let parts = '';
+  if (o.model) parts += `<span class="model">${o.model}</span>`;
+  if (o.mode) parts += `<span class="mode" style="background:${modeColor[o.mode] || C.dim}">${o.mode}</span>`;
+  if (o.ctx != null) parts += `<span class="ctx" style="color:${ctxColor(o.ctxPct)}">ctx ${o.ctx} · ${o.ctxPct}%</span>`;
+  return `<div class="meta">${parts}</div>`;
+}
 
 function titlebar(count, { filter = false, history = false } = {}) {
   return `<div class="titlebar">
-    <span class="name">claude-watch — ${count} ${count === 1 ? 'session' : 'sessions'}</span>
+    <span class="name">agentbar — ${count} ${count === 1 ? 'session' : 'sessions'}</span>
     <span class="spacer"></span>
     <span class="live">LIVE</span>
     ${funnel(filter)}
@@ -182,7 +211,9 @@ function groupHeader(sym, title, count, col) {
 
 // A session line. opts: time, proj, status, msgs, title, ask, askColor, elapsed, elapsedColor, cmd, activity, activityColor, acts:[[key,lab,style]], trail:[[t,l]]
 function line(o) {
-  let inner = `<div class="hdr"><span class="time">${o.time}</span><span class="proj">[${o.proj}]</span>${tag(o.status)}<span class="spacer"></span>${o.msgs ? `<span class="msgs">${o.msgs} msgs</span>` : ''}</div>`;
+  const src = sourceTag(o.source || 'CLAUDE');
+  let inner = `<div class="hdr"><span class="time">${o.time}</span><span class="proj">[${o.proj}]</span>${tag(o.status)}${src}<span class="spacer"></span>${o.msgs ? `<span class="msgs">${o.msgs} msgs</span>` : ''}</div>`;
+  inner += metaLine(o);
   inner += `<div class="title2">└─ ${o.title}</div>`;
   if (o.activity) inner += `<div class="activity" style="color:${o.activityColor}">⋯ ${o.activity}</div>`;
   if (o.workingElapsed) inner += `<div class="elapsed" style="color:${C.stWorking}bf">working ${o.workingElapsed}</div>`;
@@ -193,8 +224,8 @@ function line(o) {
   if (o.trail) inner += `<div class="trail">${o.trail.map(t => `<div class="te"><span class="tt">${t[0]}</span><span class="tl">${t[1]}</span></div>`).join('')}</div>`;
   return `<div class="line">${inner}</div>`;
 }
-function promptbar(n) {
-  return `<div class="promptbar"><span class="t">◉ watching ${n} ${n === 1 ? 'session' : 'sessions'} · notify-only</span></div>`;
+function promptbar(n, { keys = true } = {}) {
+  return `<div class="promptbar"><span class="t">◉ watching ${n} ${n === 1 ? 'session' : 'sessions'} · notify-only</span><span class="spacer"></span>${keys ? '<span class="keys">↑↓ ↵ d m</span>' : ''}</div>`;
 }
 function handle() { return `<div class="handle"><span class="bar"></span></div>`; }
 
@@ -211,6 +242,7 @@ const dashboard = page(
     groupHeader('●', 'NEEDS YOU', 2, C.stPermission) +
     line({
       time: '14:32:07', proj: 'agentbar', status: 'PERMISSION', msgs: 148,
+      model: 'opus-4-8', mode: 'default', ctx: '214k', ctxPct: 21,
       title: 'wire up the release workflow and cask',
       ask: 'Wants to run Bash', askColor: C.stPermission,
       elapsed: '18s', elapsedColor: C.stPermission,
@@ -220,6 +252,7 @@ const dashboard = page(
     `<div class="dashed"></div>` +
     line({
       time: '14:31:55', proj: 'notes-api', status: 'QUESTION', msgs: 62,
+      model: 'sonnet-4-5', mode: 'plan', ctx: '88k', ctxPct: 44,
       title: 'add pagination to the search endpoint',
       ask: 'Which page size should be the default?', askColor: C.stQuestion,
       elapsed: '31s', elapsedColor: C.stQuestion,
@@ -228,6 +261,7 @@ const dashboard = page(
     groupHeader('⚙', 'WORKING', 1, C.stWorking) +
     line({
       time: '14:32:09', proj: 'web-dashboard', status: 'WORKING', msgs: 90,
+      model: 'sonnet-4-5', mode: 'accept edits', ctx: '152k', ctxPct: 76,
       title: 'migrate the charts to the new theme tokens',
       activity: 'Editing ThemeTokens.ts', activityColor: C.stWorking,
       workingElapsed: '2m 13s',
@@ -236,14 +270,15 @@ const dashboard = page(
     groupHeader('○', 'IDLE', 2, C.dim) +
     line({
       time: '14:20:41', proj: 'infra', status: 'DONE', msgs: 210,
+      model: 'haiku-4-5', mode: 'default', ctx: '34k', ctxPct: 17,
       title: 'bump the terraform providers',
       activity: 'finished in 4m 02s', activityColor: C.dim,
       acts: [['↵', 'focus', 'focus'], ['›', 'trail', 'focus']],
     }) +
     `<div class="dashed"></div>` +
     line({
-      time: 'Jul 10', proj: 'blog', status: 'IDLE', msgs: 34,
-      title: 'draft the release announcement post',
+      time: 'Jul 10', proj: 'cli-tools', status: 'IDLE', msgs: 34, source: 'COPILOT',
+      title: 'add a --json flag to the status command',
       acts: [['↵', 'focus', 'focus']],
     }) +
   `</div>` +
@@ -260,6 +295,7 @@ const permission = page(
     groupHeader('●', 'NEEDS YOU', 1, C.stPermission) +
     line({
       time: '09:14:52', proj: 'agentbar', status: 'PERMISSION', msgs: 73,
+      model: 'opus-4-8', mode: 'accept edits', ctx: '156k', ctxPct: 78,
       title: 'set up the homebrew cask and release build',
       ask: 'Wants to run Bash', askColor: C.stPermission,
       elapsed: '12s', elapsedColor: C.stPermission,
@@ -274,6 +310,7 @@ const permission = page(
     groupHeader('○', 'IDLE', 1, C.dim) +
     line({
       time: '08:52:10', proj: 'docs-site', status: 'IDLE', msgs: 19,
+      model: 'sonnet-4-5', mode: 'default', ctx: '41k', ctxPct: 21,
       title: 'update the install instructions',
       acts: [['↵', 'focus', 'focus']],
     }) +
@@ -294,9 +331,9 @@ const activityLog = page(
         ['14:31:55', 'QUESTION', 'notes-api', 'Which page size should be the default?'],
         ['14:30:18', 'DONE', 'web-dashboard', 'Finished in 2m 44s'],
         ['14:24:03', 'WORKING', 'infra', 'Started a turn — migrating providers'],
+        ['14:21:09', 'DONE', 'cli-tools', 'Copilot finished — added the --json flag'],
         ['14:20:41', 'DONE', 'infra', 'Finished in 4m 02s'],
         ['14:02:37', 'ERROR', 'notes-api', 'Run interrupted — API rate limit'],
-        ['13:58:12', 'QUESTION', 'blog', 'Publish now or schedule for Monday?'],
       ];
       return rows.map((r, i) =>
         (i > 0 ? '<div class="dashed"></div>' : '') +

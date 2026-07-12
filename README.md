@@ -8,10 +8,10 @@ back to the front so you can answer there. It is a **notification tool, not an i
 never blocks your session and never sits between you and the agent.
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="AgentBar popover showing a multi-agent dashboard: a permission and a question waiting, one session working, two idle" width="380">
+  <img src="docs/images/dashboard.png" alt="AgentBar popover showing a multi-agent dashboard: a permission and a question waiting, one session working, two idle — each Claude row tagged with its model, permission mode, and context usage, plus a Copilot session" width="380">
 </p>
 
-<p align="center"><sub><i>The AgentBar popover — a live, read-only overview of every Claude Code session, with what needs you floated to the top. (UI preview rendered from the app's design, not a photo of a running app.)</i></sub></p>
+<p align="center"><sub><i>The AgentBar popover — a live, read-only overview of every Claude Code and Copilot session, each row showing its model, mode, and context usage, with what needs you floated to the top. (UI preview rendered from the app's design, not a photo of a running app.)</i></sub></p>
 
 ## How it works
 
@@ -100,7 +100,7 @@ surface exactly like Claude's.
 Every event is a notification — AgentBar never intercepts or answers a prompt for you.
 
 <p align="center">
-  <img src="docs/images/permission.png" alt="A session row waiting on a permission request, showing the tool, the shell command in an amber box, a live waiting timer, an expanded activity trail, and focus / dismiss / mute keycaps" width="360">
+  <img src="docs/images/permission.png" alt="A session row waiting on a permission request, showing the tool, the shell command in an amber box, the session's model / mode / context meta line, a live waiting timer, an expanded activity trail, and focus / dismiss / mute keycaps" width="360">
 </p>
 
 <p align="center"><sub><i>A permission request surfaced for context — the tool, its command, and how long it's been waiting. The keycaps <b>focus</b> your terminal or <b>dismiss</b> the row; you still allow or deny in the terminal.</i></sub></p>
