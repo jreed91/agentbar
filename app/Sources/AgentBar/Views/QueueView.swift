@@ -796,9 +796,10 @@ struct QueueView: View {
         // (main-actor) queue and focus the terminal while still returning nil/event to decide
         // whether the key is swallowed.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            MainActor.assumeIsolated {
-                handleKey(event) ? nil : event
-            }
+            // assumeIsolated returns a Sendable Bool (NSEvent isn't Sendable); map it to
+            // nil (swallow) / event (pass through) outside the isolated block.
+            let handled = MainActor.assumeIsolated { handleKey(event) }
+            return handled ? nil : event
         }
     }
 
