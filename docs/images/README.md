@@ -14,9 +14,21 @@ node docs/images/generate.js docs/images            # writes dashboard/permissio
 # then render each with headless Chromium at 2x, e.g.:
 chromium --headless=new --hide-scrollbars \
   --force-device-scale-factor=2 --default-background-color=00000000 \
-  --window-size=420,1000 --screenshot=docs/images/dashboard.png \
+  --window-size=420,1100 --screenshot=docs/images/dashboard.png \
   file://$PWD/docs/images/dashboard.html
 ```
 
-Crop the transparent margins to the content bounding box after rendering. Swap these for
-real screenshots of the built app whenever a signed build is available.
+Render onto a transparent background (`--default-background-color=00000000`) with a window
+tall enough to fit the content, then crop the transparent margins to the popover's bounding
+box — e.g. with Pillow:
+
+```python
+from PIL import Image
+im = Image.open("docs/images/dashboard.png").convert("RGBA")
+im.crop(im.getchannel("A").getbbox()).save("docs/images/dashboard.png")
+```
+
+The previews are kept in sync with the live UI in `app/Sources/AgentBar/Views/` — the source
+pills (CLAUDE / COPILOT), the model · mode · context meta line, and the keyboard-nav hint all
+mirror `QueueView`/`FeedComponents`. Swap these for real screenshots of the built app whenever
+a signed build is available.
