@@ -104,12 +104,24 @@ struct QueueView: View {
         .overlay(alignment: .bottom) { bottomResizeHandle }
         .background(WindowReader(trigger: popoverHeight) { window in
             pinTop(of: window)
+            makeKeyIfNeeded(window)
         })
         .onAppear { installKeyMonitor() }
         .onDisappear {
             anchorTop = nil
             removeKeyMonitor()
         }
+    }
+
+    /// Makes the popover window the key window while it's open. AgentBar is a menu-bar
+    /// accessory (`LSUIElement`), so the app never activates on its own and the popover panel
+    /// isn't key by default — which means `keyDown` events route to whatever app *is* active,
+    /// not here, and the local key monitor never sees them (mouse clicks still hit-test fine,
+    /// which is why buttons work but the keyboard doesn't). Forcing the panel key lets the
+    /// keyboard navigation actually receive events. Guarded so we only claim key once.
+    private func makeKeyIfNeeded(_ window: NSWindow) {
+        guard window.isVisible, !window.isKeyWindow else { return }
+        window.makeKey()
     }
 
     /// Keeps the popover's top edge under the menu-bar icon as its height changes: capture
@@ -682,11 +694,6 @@ struct QueueView: View {
 
     // MARK: - Session meta (model · mode · context)
 
-    /// The nominal context window used for the usage percentage. Claude Code's standard
-    /// models expose a 200k-token window; the readout is an approximation, so a session on a
-    /// larger window simply reads as a smaller fraction rather than being wrong.
-    private static let contextWindow = 200_000
-
     /// The model · mode · context-usage line under a row's header. Renders only the pieces we
     /// actually know, and nothing at all when a row (e.g. a Copilot session) carries none.
     @ViewBuilder
@@ -710,9 +717,9 @@ struct QueueView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 if let tokens = row.contextTokens {
-                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens))%")
+                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens, model: row.model))%")
                         .font(feedFont(9.5))
-                        .foregroundStyle(contextColor(tokens))
+                        .foregroundStyle(contextColor(tokens, model: row.model))
                 }
                 Spacer(minLength: 0)
             }
@@ -757,15 +764,35 @@ struct QueueView: View {
         tokens >= 1000 ? "\(Int((Double(tokens) / 1000).rounded()))k" : "\(tokens)"
     }
 
-    /// Context usage as a whole-number percent of the nominal window, clamped to 0…100.
-    private func contextPercent(_ tokens: Int) -> Int {
-        max(0, min(100, Int((Double(tokens) / Double(Self.contextWindow) * 100).rounded())))
+    /// The nominal context window (tokens) for a model — the denominator of the usage percent.
+    /// Most of Claude's models are 200k-token windows; a few (e.g. Opus 4.8) ship a 1M-token
+    /// window as standard, and Sonnet 4+ can run 1M under a beta flag. The transcript records
+    /// neither the window nor the beta, so: models known to be 1M measure against 1M always;
+    /// everything else assumes the 200k standard but promotes to 1M once usage crosses it — a
+    /// 200k model can't exceed its window, so anything above 200k (a default-1M model we don't
+    /// recognize, or a Sonnet-4+ session on the 1M beta) must be on the larger one.
+    private func contextWindow(for model: String?, usedTokens: Int) -> Int {
+        let standard = 200_000, large = 1_000_000
+        let name = (model ?? "").lowercased()
+        if isMillionTokenModel(name) { return large }
+        return usedTokens > standard ? large : standard
+    }
+
+    /// Models whose standard context window is 1M tokens (not a beta). Opus 4.8 ships 1M.
+    private func isMillionTokenModel(_ name: String) -> Bool {
+        name.contains("opus-4-8")
+    }
+
+    /// Context usage as a whole-number percent of the model's window, clamped to 0…100.
+    private func contextPercent(_ tokens: Int, model: String?) -> Int {
+        let window = contextWindow(for: model, usedTokens: tokens)
+        return max(0, min(100, Int((Double(tokens) / Double(window) * 100).rounded())))
     }
 
     /// Dim under three-quarters full, amber past that, red as it approaches the window — a
     /// quiet at-a-glance warning that a session is running low on context.
-    private func contextColor(_ tokens: Int) -> Color {
-        let percent = contextPercent(tokens)
+    private func contextColor(_ tokens: Int, model: String?) -> Color {
+        let percent = contextPercent(tokens, model: model)
         if percent >= 90 { return .stPermission }
         if percent >= 75 { return .feedAmberText }
         return .feedDim

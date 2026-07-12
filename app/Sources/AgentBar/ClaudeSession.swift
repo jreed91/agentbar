@@ -179,14 +179,18 @@ actor SessionScanner {
                         trail.append(ActivityEntry(at: stamp, label: label))
                     }
                     if trail.count > trailCap { trail.removeFirst(trail.count - trailCap) }
-                    // Track the model and context size from the newest assistant turn. Entries
-                    // are chronological, so the last write wins — a live snapshot of what this
-                    // session is running on and how full its context is.
-                    if let message = entry["message"] as? [String: Any] {
+                    // Track the model and context size from the newest *main-chain* assistant
+                    // turn. Entries are chronological, so the last write wins — a live snapshot
+                    // of what this session is running on and how full its context is. Subagent
+                    // (`Task`) turns are logged inline with `isSidechain: true` and carry their
+                    // own small, separate context; counting them would clobber the real
+                    // conversation's usage with a subagent's, so they're skipped here.
+                    let isSidechain = (entry["isSidechain"] as? Bool) ?? false
+                    if !isSidechain, let message = entry["message"] as? [String: Any] {
                         if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
                             model = m
                         }
-                        if let tokens = parseContextTokens(from: message["usage"]) {
+                        if let tokens = parseContextTokens(from: message["usage"] ?? entry["usage"]) {
                             contextTokens = tokens
                         }
                     }
