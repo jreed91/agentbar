@@ -115,17 +115,17 @@ PAYLOAD="$(cat)"
 
 read_server_file || true
 if ! server_alive; then
-  # A server.json that doesn't answer is stale (crash without clean shutdown, or a reused
-  # port). Drop it so the relaunched app republishes a fresh one rather than us trusting it.
-  [ -f "$SERVER_FILE" ] && rm -f "$SERVER_FILE" 2>/dev/null
+  # Never delete server.json from here: a health check can time out against a live
+  # but momentarily busy app, and `open` won't relaunch a running app to republish
+  # the file — deleting it would kill notifications until the app restarts. A truly
+  # stale file just keeps failing server_alive until the relaunched app overwrites it.
   PORT=""; TOKEN=""
   launch_app || exit 0
-  # Wait up to ~5s for the app to boot and publish server.json.
-  i=0
-  while [ "$i" -lt 25 ]; do
+  # Wait for the app to boot and publish server.json, but stay under the 10s hook
+  # timeout Claude Code enforces (each probe can burn up to 2s on a hung port).
+  while [ "$SECONDS" -lt 8 ]; do
     sleep 0.2
     if read_server_file && server_alive; then break; fi
-    i=$((i + 1))
   done
   server_alive || exit 0
 fi
@@ -135,20 +135,24 @@ fi
 # IDE reports TERMINAL_EMULATOR=JetBrains-JediTerm); __CFBundleIdentifier reflects whatever
 # *launched* the app and can be stale (e.g. iTerm's id when an IDE was started from a
 # shell), so the app treats it as a last resort.
-HOST_TERM="${TERM_PROGRAM:-}"
-HOST_TERMEMU="${TERMINAL_EMULATOR:-}"
-HOST_BUNDLE="${__CFBundleIdentifier:-}"
+# Strip CR/LF so an environment-controlled value can never smuggle extra headers
+# into the request (curl passes -H content through verbatim).
+HOST_TERM="$(printf '%s' "${TERM_PROGRAM:-}" | tr -d '\r\n')"
+HOST_TERMEMU="$(printf '%s' "${TERMINAL_EMULATOR:-}" | tr -d '\r\n')"
+HOST_BUNDLE="$(printf '%s' "${__CFBundleIdentifier:-}" | tr -d '\r\n')"
 
 # Fire-and-forget: the server acknowledges immediately (no body), so a short
 # timeout is plenty. We ignore the response — the prompt is answered in the terminal.
-curl -sf -m 5 -X POST \
+# The payload goes to curl via stdin, not argv: a large PostToolUse tool_response
+# can exceed ARG_MAX, and an exec failure there would silently drop the event.
+printf '%s' "$PAYLOAD" | curl -sf -m 5 -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-AgentBar-Term: ${HOST_TERM}" \
   -H "X-AgentBar-TermEmu: ${HOST_TERMEMU}" \
   -H "X-AgentBar-Host: ${HOST_BUNDLE}" \
   -H "X-AgentBar-Agent: ${AGENT}" \
-  --data-binary "$PAYLOAD" \
+  --data-binary @- \
   "http://127.0.0.1:${PORT}/v1/${EVENT}" >/dev/null 2>&1 || exit 0
 
 exit 0
