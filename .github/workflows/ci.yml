@@ -5,12 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+# None of these jobs writes to the repo.
+permissions:
+  contents: read
+
+# Cancel superseded runs on PR branches; let pushes to main run to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Build app (macOS)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache Swift build
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: swift-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
 
       - name: Build release binary
         run: swift build -c release --package-path app
@@ -54,7 +71,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Match the release job (semantic-release 25 requires Node >= 22).
+          node-version: 22
 
       - name: Install commitlint
         run: npm ci

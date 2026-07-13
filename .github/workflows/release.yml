@@ -34,7 +34,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # semantic-release 25 requires Node ^22.14.0 || >= 24.10.0.
+          node-version: 22
 
       - name: Install release tooling
         run: npm ci
