@@ -15,6 +15,13 @@ This plan captures the decisions made during scoping and the full build-out.
 > what Claude is asking and focuses your terminal; you always answer in the terminal.
 > Sections below that describe blocking behaviour and answer-feedback are retained for
 > historical context — the notes below mark where the current design differs.
+>
+> **This document is a point-in-time plan, not living documentation.** Details drift as the
+> code moves: the repo now lives at `jreed91/agentbar`, the plugin registers ten hooks (see
+> `plugin/hooks/hooks.json`), all hook timeouts are 10s (fire-and-forget), releases run via
+> semantic-release on pushes to `main` rather than on tags, and the app gained a Copilot CLI
+> integration (`copilot/`), session dashboard, and history views not described here. The
+> README is the source of truth for current behaviour.
 
 ---
 
@@ -110,6 +117,8 @@ notification.
 | `POST /v1/ask` | no | `204` (notification enqueued) |
 | `POST /v1/permission` | no | `204` (notification enqueued) |
 | `POST /v1/elicit` | no | `204` (notification enqueued) |
+| `POST /v1/working` | no | `204` (live "thinking" status; clears answered prompts) |
+| `POST /v1/resolved` | no | `204` (a tool ran — clears answered prompts) |
 | `POST /v1/notify` | no | `204` |
 | `POST /v1/stop` / `subagent` / `sessionend` / `stopfailure` | no | `204` |
 

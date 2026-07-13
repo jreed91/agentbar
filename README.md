@@ -52,7 +52,7 @@ feed it). Install both.
 ### 1. App (Homebrew cask)
 
 ```sh
-brew tap jreed91/agentbarn https://github.com/jreed91/agentbar
+brew tap jreed91/agentbar https://github.com/jreed91/agentbar
 brew install --cask agentbar
 ```
 
@@ -89,7 +89,7 @@ absolute path of the hook bridge bundled inside `AgentBar.app` into
 feeding AgentBar. Remove the wiring with `make uninstall-copilot`.
 
 Copilot's hook surface exposes lifecycle and status events — turn started, tool completed,
-task finished, subagent finished, session ended, and errors — but it has no equivalent of
+session ended, and errors — but it has no equivalent of
 Claude Code's `AskUserQuestion` / permission / MCP-input prompts, so **questions and permission
 requests remain Claude-only**. Copilot sessions still appear in the roster and dashboard (read
 from `~/.copilot/session-state`), tagged `COPILOT`, and their working/finished/error states
@@ -243,7 +243,8 @@ make bundle install
 Other useful targets: `make build`, `make bundle`, `make adhoc`, `make clean`. See the
 `Makefile` for signing, zipping, and notarizing targets.
 
-Run the unit tests (the hook-payload parsers and duration formatting) with `make test` (or
+Run the unit tests (hook-payload parsers, transcript/session-state parsers, queue lifecycle,
+and duration formatting) with `make test` (or
 `swift test --package-path app`); they run in CI on every pull request. To diagnose a broken
 install end to end, `make doctor` checks that both halves are wired up, and
 `plugin/bin/agentbar-hook --selftest` probes the CLI → server pipeline and prints what it
@@ -257,7 +258,7 @@ agentbar/
 ├── docs/implementation-plan.md        # full design & decisions
 ├── plugin/                            # the Claude Code plugin ("agentbar")
 │   ├── .claude-plugin/plugin.json
-│   ├── hooks/hooks.json               # PreToolUse / PermissionRequest / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
+│   ├── hooks/hooks.json               # UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
 │   └── bin/agentbar-hook              # dependency-free bash bridge (curl + sed); agent-agnostic
 ├── copilot/                           # GitHub Copilot CLI integration
 │   └── hooks/agentbar.json            # hook config template → ~/.copilot/hooks/agentbar.json

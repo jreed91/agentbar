@@ -4,7 +4,7 @@
     "name": "jreed91"
   },
   "metadata": {
-    "description": "Menu bar companion for Claude Code — answer agent questions and permission prompts from the macOS menu bar",
+    "description": "Menu bar companion for Claude Code — see agent questions, permission prompts, and idle sessions at a glance and get back to the right terminal",
     "version": "0.2.0"
   },
   "plugins": [
