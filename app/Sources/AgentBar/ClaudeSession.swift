@@ -213,7 +213,10 @@ actor SessionScanner {
 
             if type == "user" || type == "assistant" {
                 messageCount += 1
+                // `isMeta` marks turns Claude Code injected itself (skill/command content,
+                // caveat preambles) — never something the human typed, so never a title.
                 if type == "user", firstUserText == nil,
+                   (entry["isMeta"] as? Bool) != true,
                    let text = userText(from: entry["message"]) {
                     firstUserText = text
                 }
@@ -342,8 +345,16 @@ actor SessionScanner {
         guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         // Slash-command / tool-result turns are stored as user entries wrapped in tags; they
         // are not prompts the human typed, so they make poor titles.
-        if text.hasPrefix("<") { return nil }
+        if isSyntheticText(text) { return nil }
         return text
+    }
+
+    /// Whether a stretch of message text is one of Claude Code's own injected turns rather
+    /// than something a human typed: tag-wrapped envelopes (slash commands, tool results,
+    /// system reminders) or skill content, which is injected as a user message that opens
+    /// with a `Base directory for this skill: <path>` preamble.
+    private static func isSyntheticText(_ text: String) -> Bool {
+        text.hasPrefix("<") || text.hasPrefix("Base directory for this skill")
     }
 
     /// The ordered actions in an assistant message: one verb phrase per tool call, or a single
@@ -406,7 +417,7 @@ actor SessionScanner {
     /// activity labels. Returns nil when nothing usable remains.
     private static func snippet(_ text: String?) -> String? {
         guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty, !text.hasPrefix("<") else { return nil }
+              !text.isEmpty, !isSyntheticText(text) else { return nil }
         return condense(text, limit: 60)
     }
 
