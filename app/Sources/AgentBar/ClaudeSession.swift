@@ -53,6 +53,18 @@ struct ClaudeSession: Identifiable, Sendable, Hashable {
     /// brand-new session with no assistant turn yet, or a Copilot session (no comparable
     /// field). Consulted only when there are no live hook events; live events always win.
     let isTurnInFlight: Bool
+    /// Whether a subagent (a `Task` sidechain) is currently mid-work: the main turn is in
+    /// flight *and* the most recent sidechain assistant turn stopped for `tool_use`. A
+    /// subagent only runs while the parent turn is waiting on its `Task` tool, so a finished
+    /// main turn (`end_turn`) clears this even if a stale sidechain message ended on
+    /// `tool_use`. `false` for a session with no sidechain activity, or a Copilot session.
+    let subagentActive: Bool
+    /// Background shell jobs the session has started and not explicitly killed: the count of
+    /// `Bash` tool calls with `run_in_background: true`, minus `KillShell`/`KillBash` calls,
+    /// clamped at zero. This is a "launched, not torn down" tally, not a live process count —
+    /// neither the hooks nor the transcript record a background job exiting on its own, so the
+    /// UI labels it honestly. `0` for a session that started none, or a Copilot session.
+    let backgroundJobs: Int
     /// The transcript file, kept so the row can reveal it in Finder.
     let fileURL: URL
     /// Which agent this session belongs to. Set by the scanner that discovered it —
@@ -174,6 +186,9 @@ actor SessionScanner {
         var model: String?
         var contextTokens: Int?
         var lastStopReason: String?
+        var lastSidechainStopReason: String?
+        var backgroundLaunches = 0
+        var backgroundKills = 0
 
         for line in contents.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
@@ -213,20 +228,32 @@ actor SessionScanner {
                     // own small, separate context; counting them would clobber the real
                     // conversation's usage with a subagent's, so they're skipped here.
                     let isSidechain = (entry["isSidechain"] as? Bool) ?? false
-                    if !isSidechain, let message = entry["message"] as? [String: Any] {
-                        if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
-                            model = m
-                        }
-                        if let tokens = parseContextTokens(from: message["usage"] ?? entry["usage"]) {
-                            contextTokens = tokens
-                        }
+                    // Background-shell accounting spans both chains: a background job is a
+                    // background job whoever launched it.
+                    let tools = toolCounts(in: entry["message"])
+                    backgroundLaunches += tools.launches
+                    backgroundKills += tools.kills
+                    if let message = entry["message"] as? [String: Any] {
                         // The turn's completion signal, last write wins: `tool_use` means the
                         // agent committed to another tool and is still working; `end_turn`
                         // (or `max_tokens`) means the turn is done. A message still streaming
                         // carries no `stop_reason` yet — leave the prior value so an in-flight
-                        // turn isn't misread as finished mid-stream.
+                        // turn isn't misread as finished mid-stream. Tracked per chain so a
+                        // subagent's state and the main turn's state stay independent.
                         if let reason = message["stop_reason"] as? String, !reason.isEmpty {
-                            lastStopReason = reason
+                            if isSidechain { lastSidechainStopReason = reason }
+                            else { lastStopReason = reason }
+                        }
+                        // Model / context come from the main chain only: a subagent runs a
+                        // small, separate context that would otherwise clobber the real
+                        // conversation's usage with the subagent's.
+                        if !isSidechain {
+                            if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
+                                model = m
+                            }
+                            if let tokens = parseContextTokens(from: message["usage"] ?? entry["usage"]) {
+                                contextTokens = tokens
+                            }
                         }
                     }
                 }
@@ -236,6 +263,7 @@ actor SessionScanner {
         let rawTitle = firstUserText ?? summaryText ?? "(no prompt)"
         let title = condense(rawTitle)
         let resolvedCwd = cwd ?? decodeProjectFolder(folderName)
+        let inFlight = lastStopReason == "tool_use"
 
         return ClaudeSession(
             id: sessionID,
@@ -247,10 +275,35 @@ actor SessionScanner {
             trail: trail,
             model: model,
             contextTokens: contextTokens,
-            isTurnInFlight: lastStopReason == "tool_use",
+            isTurnInFlight: inFlight,
+            // A subagent is running only while its parent turn is in flight (waiting on the
+            // `Task` tool); a finished main turn clears it regardless of a stale sidechain.
+            subagentActive: inFlight && lastSidechainStopReason == "tool_use",
+            backgroundJobs: max(0, backgroundLaunches - backgroundKills),
             fileURL: fileURL,
             source: .claude
         )
+    }
+
+    /// Counts, within one assistant message's content blocks, the background shells it
+    /// launched (`Bash` with `run_in_background: true`) and the shells it killed
+    /// (`KillShell`/`KillBash`). Both spellings of the kill tool are accepted so the tally
+    /// survives Claude Code's rename of that tool. Zero for a message with no tool calls.
+    private static func toolCounts(in message: Any?) -> (launches: Int, kills: Int) {
+        guard let message = message as? [String: Any],
+              let blocks = message["content"] as? [[String: Any]] else { return (0, 0) }
+        var launches = 0, kills = 0
+        for block in blocks where (block["type"] as? String) == "tool_use" {
+            guard let name = block["name"] as? String else { continue }
+            if name == "Bash" {
+                if (block["input"] as? [String: Any])?["run_in_background"] as? Bool == true {
+                    launches += 1
+                }
+            } else if name == "KillShell" || name == "KillBash" {
+                kills += 1
+            }
+        }
+        return (launches, kills)
     }
 
     /// Sums the input-side token counts from an assistant message's `usage` block — the fresh

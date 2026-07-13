@@ -71,6 +71,56 @@ final class ClaudeSessionTests: XCTestCase {
         XCTAssertFalse(parse(jsonl).isTurnInFlight)
     }
 
+    // MARK: - subagentActive (sidechain in flight)
+
+    /// A subagent is active when the main turn is in flight (waiting on its `Task` tool) and
+    /// the most recent sidechain assistant turn is still calling tools.
+    func testSubagentActiveWhenSidechainInFlightDuringMainTurn() {
+        let jsonl = """
+        {"type":"assistant","timestamp":"2026-07-11T10:00:01Z","message":{"model":"claude-opus-4-8","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Task","input":{}}]}}
+        {"type":"assistant","timestamp":"2026-07-11T10:00:02Z","isSidechain":true,"message":{"model":"claude-opus-4-8","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Grep","input":{"pattern":"x"}}]}}
+        """
+        let session = parse(jsonl)
+        XCTAssertTrue(session.subagentActive)
+        XCTAssertTrue(session.isTurnInFlight)
+    }
+
+    /// A finished main turn clears the subagent indicator even if the last sidechain message
+    /// happened to end on `tool_use` — a subagent cannot outlive its parent turn.
+    func testSubagentInactiveWhenMainTurnEnded() {
+        let jsonl = """
+        {"type":"assistant","timestamp":"2026-07-11T10:00:01Z","isSidechain":true,"message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Grep","input":{"pattern":"x"}}]}}
+        {"type":"assistant","timestamp":"2026-07-11T10:00:02Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"All done."}]}}
+        """
+        XCTAssertFalse(parse(jsonl).subagentActive)
+    }
+
+    // MARK: - backgroundJobs (launched, not killed)
+
+    func testBackgroundJobsCountsLaunchesMinusKills() {
+        let jsonl = """
+        {"type":"assistant","timestamp":"2026-07-11T10:00:01Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}
+        {"type":"assistant","timestamp":"2026-07-11T10:00:02Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"tail -f log","run_in_background":true}}]}}
+        {"type":"assistant","timestamp":"2026-07-11T10:00:03Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"KillShell","input":{"shell_id":"a"}}]}}
+        """
+        XCTAssertEqual(parse(jsonl).backgroundJobs, 1)
+    }
+
+    /// A foreground Bash call (no `run_in_background`) is not a background job.
+    func testForegroundBashIsNotABackgroundJob() {
+        let jsonl = #"{"type":"assistant","timestamp":"2026-07-11T10:00:01Z","message":{"stop_reason":"end_turn","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#
+        XCTAssertEqual(parse(jsonl).backgroundJobs, 0)
+    }
+
+    /// More kills than launches clamps at zero rather than going negative.
+    func testBackgroundJobsClampsAtZero() {
+        let jsonl = """
+        {"type":"assistant","timestamp":"2026-07-11T10:00:01Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"sleep 100","run_in_background":true}}]}}
+        {"type":"assistant","timestamp":"2026-07-11T10:00:02Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"KillShell","input":{}},{"type":"tool_use","name":"KillBash","input":{}}]}}
+        """
+        XCTAssertEqual(parse(jsonl).backgroundJobs, 0)
+    }
+
     // MARK: - Regression: the rest of the row still parses
 
     func testTitleModelContextAndCwdStillParse() {

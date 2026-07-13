@@ -449,6 +449,10 @@ struct QueueView: View {
             // transcript and hook events. Only the parts we actually know are shown.
             metaLine(row)
 
+            // Background-work indicators: a running subagent and/or background shell jobs the
+            // session has started, read from the transcript.
+            jobsLine(row)
+
             // The session's title (first prompt / summary) — clickable to focus its terminal.
             Button {
                 TerminalFocus.focus(hint: row.terminalHint, cwd: row.cwd)
@@ -690,6 +694,49 @@ struct QueueView: View {
     private func projectName(_ cwd: String) -> String {
         let name = URL(fileURLWithPath: cwd).lastPathComponent
         return name.isEmpty ? cwd : name
+    }
+
+    // MARK: - Background-work indicators (subagent · background jobs)
+
+    /// A row of small indicators for the session's background work: a running subagent and
+    /// the count of background shell jobs it has started. Both are read from the transcript
+    /// and are gated so a stale signal doesn't linger on a quiet session — the subagent chip
+    /// only shows while the session is actively working, the jobs chip only while it is live.
+    @ViewBuilder
+    private func jobsLine(_ row: SessionRow) -> some View {
+        let showSubagent = row.subagentActive && row.status == .working
+        let showJobs = row.backgroundJobs > 0 && row.isLive
+        if showSubagent || showJobs {
+            HStack(spacing: 7) {
+                if showSubagent {
+                    indicatorChip("⚙ subagent", color: .stWorking)
+                        .help("A subagent is running in this session")
+                }
+                if showJobs {
+                    indicatorChip("⇄ \(row.backgroundJobs) bg", color: .feedAmberText)
+                        .help("""
+                        \(row.backgroundJobs) background \(row.backgroundJobs == 1 ? "job" : "jobs") \
+                        started and not killed. AgentBar can't confirm they're still running — \
+                        neither the hooks nor the transcript record a background job exiting.
+                        """)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// A small outlined pill for a background-work indicator, styled like `SourceTag`.
+    private func indicatorChip(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(feedFont(8.5, .bold))
+            .tracking(0.3)
+            .foregroundStyle(color)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1.5)
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(color.opacity(0.5), lineWidth: 1)
+            )
     }
 
     // MARK: - Session meta (model · mode · context)

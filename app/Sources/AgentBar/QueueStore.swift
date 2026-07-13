@@ -45,6 +45,13 @@ struct SessionRow: Identifiable {
     /// The session's permission mode (`default`, `acceptEdits`, `plan`, `bypassPermissions`),
     /// captured from its hook events. Nil until a hook carrying it has been seen.
     let mode: String?
+    /// Whether a subagent (a `Task` sidechain) is currently working in this session, read from
+    /// the transcript. Surfaced as a row indicator; `false` for a live-only or Copilot row.
+    let subagentActive: Bool
+    /// Background shell jobs started and not explicitly killed, read from the transcript. A
+    /// "launched, not torn down" tally (not a live process count); `0` for a live-only or
+    /// Copilot row.
+    let backgroundJobs: Int
 }
 
 /// At-a-glance counts for the dashboard summary strip, bucketed from the merged session
@@ -283,7 +290,9 @@ final class QueueStore: ObservableObject {
                 trail: session.trail,
                 model: session.model,
                 contextTokens: session.contextTokens,
-                mode: sessionMode[session.id]
+                mode: sessionMode[session.id],
+                subagentActive: session.subagentActive,
+                backgroundJobs: session.backgroundJobs
             ))
         }
 
@@ -307,7 +316,9 @@ final class QueueStore: ObservableObject {
                 trail: [],
                 model: nil,
                 contextTokens: nil,
-                mode: sessionMode[sessionID]
+                mode: sessionMode[sessionID],
+                subagentActive: false,
+                backgroundJobs: 0
             ))
         }
 
