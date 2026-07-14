@@ -126,14 +126,56 @@ struct QueueView: View {
 
     /// Keeps the popover's top edge under the menu-bar icon as its height changes: capture
     /// the top on first sight, then hold `maxY` constant by adjusting the window origin.
+    ///
+    /// Everything here is clamped to the screen the popover is on. Without that, two things
+    /// pushed the popover off-screen: a `popoverHeight` saved on a tall display (up to 820)
+    /// is taller than the space below the menu bar on a laptop, so `top - height` dropped the
+    /// bottom below the screen; and a `top` captured mid-open — before AppKit finished seating
+    /// the panel under the status item — anchored the window to a stale, off-screen spot that
+    /// this method then re-asserted on every SwiftUI update. Clamping the anchor, the height,
+    /// and the final origin to `visibleFrame` keeps the popover fully on-screen either way.
     private func pinTop(of window: NSWindow) {
         guard window.isVisible, window.frame.height > 1 else { return }
-        if anchorTop == nil { anchorTop = window.frame.maxY }
+
+        // The visible frame excludes the menu bar and Dock. Without a screen (window seated
+        // off every display) fall back to the unclamped behavior so we still pin the top.
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+
+        // Clamp the captured anchor to the top of the visible area: a top read above the
+        // screen edge (a not-yet-seated frame) would otherwise pin the window off-screen.
+        if anchorTop == nil {
+            let captured = window.frame.maxY
+            anchorTop = visible.map { min(captured, $0.maxY) } ?? captured
+        }
         guard let top = anchorTop else { return }
+
         let frame = window.frame
-        let targetY = top - frame.height
-        if abs(frame.origin.y - targetY) > 0.5 {
-            window.setFrameOrigin(NSPoint(x: frame.origin.x, y: targetY))
+
+        if let visible {
+            // Shrink the popover if it can't fit between the pinned top and the screen's
+            // bottom edge, so it grows down to the edge instead of hanging off it. Never go
+            // below `minHeight`. This drives SwiftUI's `.frame(height:)`, so the window
+            // re-lays-out to the fitted height on the next pass and the top lands on the
+            // anchor exactly; persisting the fitted value makes that pass idempotent rather
+            // than oscillating. This tick still clamps the bottom on-screen below.
+            let fitHeight = max(minHeight, top - visible.minY)
+            if popoverHeight > fitHeight + 0.5 {
+                popoverHeight = fitHeight
+            }
+        }
+
+        var targetY = top - frame.height
+        var targetX = frame.origin.x
+        if let visible {
+            // Keep the bottom on-screen using the window's real current height, then the
+            // horizontal span within the visible frame so an icon near a screen edge doesn't
+            // leave the centered popover spilling off it.
+            targetY = max(visible.minY, targetY)
+            targetX = min(max(targetX, visible.minX), visible.maxX - frame.width)
+        }
+
+        if abs(frame.origin.x - targetX) > 0.5 || abs(frame.origin.y - targetY) > 0.5 {
+            window.setFrameOrigin(NSPoint(x: targetX, y: targetY))
         }
     }
 
