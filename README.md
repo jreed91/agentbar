@@ -23,9 +23,11 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
 
 1. The plugin registers hooks across Claude Code's interaction points: turn starts
    (`UserPromptSubmit`, surfaced as a live "thinking" status), questions
-   (`AskUserQuestion`), permission requests, MCP input requests (`Elicitation`), tool
-   completions (`PostToolUse`, used to auto-clear a prompt once you answer it in the
-   terminal), idle notifications, and the task-finished / subagent-finished / session-ended
+   (`AskUserQuestion`), permission requests and denials (`PermissionRequest`,
+   `PermissionDenied`), MCP input requests (`Elicitation`), tool completions and failures
+   (`PostToolUse` / `PostToolUseFailure` — together with `PermissionDenied`, used to
+   auto-clear a prompt once you answer it in the terminal, whether you allow or deny),
+   idle notifications, and the task-finished / subagent-finished / session-ended
    / run-interrupted (`Stop`, `SubagentStop`, `SessionEnd`, `StopFailure`) events.
 2. When one fires, the bundled `bin/agentbar-hook` script reads the payload and POSTs it
    to AgentBar's local HTTP server (`127.0.0.1`, ephemeral port, per-launch bearer token
@@ -36,8 +38,9 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
    posts a notification showing what Claude is asking.
 4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus"
    button in the popover) brings the session's own terminal/IDE window back to the front.
-   Once you answer, AgentBar notices the session make progress (`PostToolUse` / `Stop`) and
-   clears the item automatically.
+   Once you answer — allow or deny — AgentBar notices the session move past the prompt
+   (`PostToolUse` / `PostToolUseFailure` / `PermissionDenied` / `Stop`) and clears the
+   item automatically.
 
 **Fail-open contract:** the CLI always returns immediately. If the app is missing,
 unreachable, or errors in any way, the hook exits cleanly with no output — exactly as if
@@ -258,7 +261,7 @@ agentbar/
 ├── docs/implementation-plan.md        # full design & decisions
 ├── plugin/                            # the Claude Code plugin ("agentbar")
 │   ├── .claude-plugin/plugin.json
-│   ├── hooks/hooks.json               # UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
+│   ├── hooks/hooks.json               # UserPromptSubmit / PreToolUse / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
 │   └── bin/agentbar-hook              # dependency-free bash bridge (curl + sed); agent-agnostic
 ├── copilot/                           # GitHub Copilot CLI integration
 │   └── hooks/agentbar.json            # hook config template → ~/.copilot/hooks/agentbar.json

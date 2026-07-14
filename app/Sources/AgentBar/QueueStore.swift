@@ -454,9 +454,10 @@ final class QueueStore: ObservableObject {
             ))
 
         case .resolved:
-            // A tool completed — Claude can only run tools once you have answered whatever
-            // it was blocked on, so any pending prompt for this session was resolved in the
-            // terminal. Clear its attention rows (and their banners); Claude is now working.
+            // A tool finished (successfully or not) — Claude can only run tools once you have
+            // answered whatever it was blocked on, so any pending prompt for this session was
+            // resolved in the terminal. Clear its attention rows (and their banners); Claude
+            // is now working.
             clearAttention(for: parsed.sessionID)
             if settingEnabled("notifyWorking"), !parsed.sessionID.isEmpty {
                 enqueueWorking(PendingItem(
@@ -467,6 +468,14 @@ final class QueueStore: ObservableObject {
                     terminalHint: terminal
                 ))
             }
+
+        case .denied:
+            // A permission prompt was answered with a denial in the terminal
+            // (`PermissionDenied`). The prompt is over, so its attention row (and banner)
+            // must clear — but unlike `resolved`, Claude is not necessarily working now:
+            // a denial can interrupt the turn and leave the session waiting for your typed
+            // feedback, so no "thinking" status row is enqueued.
+            clearAttention(for: parsed.sessionID)
 
         case .working:
             // A new user turn has begun (UserPromptSubmit). Claude only runs this hook once it

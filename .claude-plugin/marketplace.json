@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Menu bar companion for Claude Code — see agent questions, permission prompts, and idle sessions at a glance and get back to the right terminal",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "plugins": [
     {
       "name": "agentbar",
       "source": "./plugin",
       "description": "Routes Claude Code's live thinking status, questions, permission prompts, idle alerts, and task-finished events to the AgentBar menu bar app.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "jreed91"
       }

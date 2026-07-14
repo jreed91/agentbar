@@ -66,6 +66,47 @@ final class QueueStoreAttentionTests: XCTestCase {
                       "a completed tool means the prompt was answered — the row must clear")
     }
 
+    func testResolvedClearsPendingPermission() {
+        UserDefaults.standard.set(true, forKey: "notifyPermissions")
+        let queue = QueueStore()
+        let session = "sess-perm-allowed"
+
+        queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
+        XCTAssertEqual(pendingItems(queue, session: session).map(\.feedStatus), [.permission])
+
+        // Covers both PostToolUse and PostToolUseFailure — the plugin maps either to
+        // `resolved`, since an allowed tool that errors was still answered in the terminal.
+        queue.submit(event: .resolved, payload: plainPayload(sessionID: session))
+        XCTAssertTrue(pendingItems(queue, session: session).isEmpty,
+                      "an allowed tool ran — the permission row must clear")
+    }
+
+    func testDeniedClearsPendingPermission() {
+        UserDefaults.standard.set(true, forKey: "notifyPermissions")
+        let queue = QueueStore()
+        let session = "sess-perm-denied"
+
+        queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
+        XCTAssertEqual(pendingItems(queue, session: session).map(\.feedStatus), [.permission])
+
+        queue.submit(event: .denied, payload: plainPayload(sessionID: session))
+        XCTAssertTrue(pendingItems(queue, session: session).isEmpty,
+                      "denying in the terminal answers the prompt — the row must clear")
+    }
+
+    func testDeniedAssumesNoWorkingStatus() {
+        UserDefaults.standard.set(true, forKey: "notifyPermissions")
+        UserDefaults.standard.set(true, forKey: "notifyWorking")
+        let queue = QueueStore()
+        let session = "sess-perm-denied-quiet"
+
+        queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
+        queue.submit(event: .denied, payload: plainPayload(sessionID: session))
+
+        XCTAssertTrue(queue.items.filter { $0.sessionID == session }.isEmpty,
+                      "a denial can interrupt the turn — it must not enqueue a working row")
+    }
+
     func testNewTurnClearsPendingPermission() {
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
         let queue = QueueStore()

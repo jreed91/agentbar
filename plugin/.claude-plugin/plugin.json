@@ -1,7 +1,7 @@
 {
   "name": "agentbar",
   "description": "Get notified when Claude Code needs you — questions, permission prompts, and idle sessions surface in the AgentBar macOS menu bar app, and you answer in your terminal. Installs hooks automatically — no configuration needed.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "jreed91"
   },

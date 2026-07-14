@@ -61,9 +61,14 @@ enum HookEvent: String {
     case elicit
     // Live-status event — Claude has started a turn and is thinking/working.
     case working
-    // Resolution event — a tool completed, so any prompt you were shown for this
-    // session has been answered in the terminal; its attention rows can clear.
+    // Resolution events — the session made progress past a prompt, so anything you
+    // were shown for it has been answered in the terminal; its attention rows can clear.
+    // `resolved` is a tool finishing (`PostToolUse` / `PostToolUseFailure` — Claude keeps
+    // working either way); `denied` is a permission prompt answered with "no"
+    // (`PermissionDenied` — Claude may continue or wait for your typed feedback, so no
+    // "working" status is assumed).
     case resolved
+    case denied
     // Informational events — nothing to act on.
     case notify
     case stop

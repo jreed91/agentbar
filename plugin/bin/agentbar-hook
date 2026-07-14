@@ -4,7 +4,7 @@
 #
 # Usage: agentbar-hook <event> [agent]
 #        agentbar-hook --selftest
-#   events: working | ask | permission | elicit | resolved | notify | stop | subagent | sessionend | stopfailure
+#   events: working | ask | permission | elicit | resolved | denied | notify | stop | subagent | sessionend | stopfailure
 #   agent:  claude (default) | copilot  — which coding agent fired the event. The Claude
 #           Code plugin omits it; the Copilot CLI hook config passes "copilot". It is sent
 #           to AgentBar in the X-AgentBar-Agent header so the app can tag and route the row.

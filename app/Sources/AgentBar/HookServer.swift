@@ -199,6 +199,8 @@ final class HookServer {
             dispatch(.working, body: request.body, hint: hint, source: source, connection: connection)
         case ("POST", "/v1/resolved"):
             dispatch(.resolved, body: request.body, hint: hint, source: source, connection: connection)
+        case ("POST", "/v1/denied"):
+            dispatch(.denied, body: request.body, hint: hint, source: source, connection: connection)
         case ("POST", "/v1/notify"):
             dispatch(.notify, body: request.body, hint: hint, source: source, connection: connection)
         case ("POST", "/v1/stop"):
