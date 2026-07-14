@@ -34,6 +34,11 @@ struct QueueView: View {
     /// the MenuBarExtra window is hidden, not torn down, between opens.
     @State private var lastAppliedOrigin: CGPoint?
 
+    /// A weak handle to the hosting popover window, captured by `WindowReader`, so the
+    /// resize drag can move the window synchronously. Weak because the window owns the view
+    /// hierarchy this state lives in.
+    @State private var hostWindow = WeakWindowBox()
+
     /// When true the feed area shows the recent-activity log instead of the live sessions.
     @State private var showHistory = false
 
@@ -110,6 +115,7 @@ struct QueueView: View {
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .bottom) { bottomResizeHandle }
         .background(WindowReader(trigger: popoverHeight) { window in
+            hostWindow.window = window
             pinTop(of: window)
             makeKeyIfNeeded(window)
         })
@@ -223,7 +229,7 @@ struct QueueView: View {
                     .onChanged { value in
                         let base = resizeBaseHeight ?? popoverHeight
                         if resizeBaseHeight == nil { resizeBaseHeight = base }
-                        popoverHeight = min(maxHeight, max(minHeight, base + value.translation.height))
+                        resize(to: base + value.translation.height)
                     }
                     .onEnded { _ in resizeBaseHeight = nil }
             )
@@ -231,6 +237,29 @@ struct QueueView: View {
                 if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
             }
             .help("Drag to resize")
+    }
+
+    /// Applies one step of the resize drag: clamp the height (to the drag limits and to what
+    /// fits between the pinned top and the screen's bottom edge), persist it, and move the
+    /// window in a single top-anchored `setFrame`. Without the direct move, SwiftUI resizes
+    /// the window around its fixed bottom-left origin — the top edge lurches up off the menu
+    /// bar — and `pinTop` re-seats it a runloop later, so the top visibly bounced against the
+    /// menu bar for the whole drag. Setting the frame here first makes SwiftUI's own layout
+    /// pass a no-op, keeping the top seated throughout.
+    private func resize(to rawHeight: Double) {
+        var height = min(maxHeight, max(minHeight, rawHeight))
+        let window = hostWindow.window
+        if let top = anchorTop, let visible = (window?.screen ?? NSScreen.main)?.visibleFrame {
+            height = max(minHeight, min(height, top - visible.minY))
+        }
+        popoverHeight = height
+        // Without a window or anchor yet, fall back to the async pinTop pass to seat the top.
+        guard let window, let top = anchorTop else { return }
+        var frame = window.frame
+        frame.origin.y = top - height
+        frame.size.height = height
+        window.setFrame(frame, display: true)
+        lastAppliedOrigin = frame.origin
     }
 
     // MARK: - Title bar
@@ -1031,6 +1060,11 @@ struct QueueView: View {
         }
         return true
     }
+}
+
+/// A weak `NSWindow` holder assignable from `@State` without retaining the window.
+private final class WeakWindowBox {
+    weak var window: NSWindow?
 }
 
 /// Exposes the hosting `NSWindow` so the popover can pin its own top edge. `trigger` is a
