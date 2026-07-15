@@ -66,6 +66,17 @@ struct SettingsView: View {
                 }
             }
 
+            Section {
+                ShortcutRecorderRow(title: "Open AgentBar", action: .togglePopover)
+                ShortcutRecorderRow(title: "Focus what needs me", action: .focusNeedsMe)
+            } header: {
+                Text("Shortcuts")
+            } footer: {
+                Text("Shortcuts work system-wide. Focus jumps to the prompt that has waited longest.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Do Not Disturb") {
                 Toggle("Silence banners during a window", isOn: $dndEnabled)
                     .help("Rows still badge the menu bar; only banners and sounds are held back.")

@@ -336,6 +336,30 @@ final class QueueStore: ObservableObject {
         return RosterFacts(count: rows.count, workingCount: workingCount, workingSources: workingSources)
     }
 
+    /// The session whose oldest unanswered attention item (question / permission / MCP input)
+    /// has been waiting the longest across the whole roster — the target of the "Focus what
+    /// needs me" global hotkey. Nil when nothing needs you.
+    ///
+    /// This is deliberately the mirror image of QueueView's `focusLatestAttention()`, which
+    /// jumps to the *newest* prompt. Clicking the hero follows your eye to whatever just came
+    /// up; the global hotkey is a press-without-looking backlog tool, so it sends you to the
+    /// prompt that has been blocked longest — nothing starves while you work in another app.
+    /// A row's own age is its oldest pending item, so a session sitting on two prompts is
+    /// ranked by the earlier of them.
+    func longestWaitingAttentionRow() -> SessionRow? {
+        sessionRows
+            .compactMap { row -> (row: SessionRow, waitingSince: Date)? in
+                let oldest = row.liveItems
+                    .filter { $0.needsResponse }
+                    .map(\.createdAt)
+                    .min()
+                guard let oldest else { return nil }
+                return (row, oldest)
+            }
+            .min(by: { $0.waitingSince < $1.waitingSince })?
+            .row
+    }
+
     // MARK: - Session roster (disk scan + live merge)
 
     /// Kicks off a background scan of the transcript tree and republishes `scannedSessions`.
