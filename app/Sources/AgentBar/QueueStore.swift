@@ -129,6 +129,59 @@ final class QueueStore: ObservableObject {
         (UserDefaults.standard.array(forKey: "mutedProjects") as? [String]) ?? []
     )
 
+    /// When any hook event was last received, across all agents. Drives the Setup panel's
+    /// "plugin is talking to us" health check and the popover's "plugin not detected" pointer.
+    /// Seeded from persistence at init (see `lastHookBySource`) so a relaunch after real
+    /// activity doesn't wrongly read as "never heard from".
+    @Published private(set) var lastHookAt: Date?
+
+    /// When each agent's hooks were last heard, keyed by source, so the Setup panel can report
+    /// the Claude plugin and the Copilot bridge independently. Persisted per source (keys
+    /// `lastHookAtClaude` / `lastHookAtCopilot`) and reloaded at init; `lastHookAt` is derived
+    /// as the newest of these. Reads go through `lastHookAt(for:)`.
+    @Published private(set) var lastHookBySource: [AgentSource: Date] = [:]
+
+    /// The last time `source`'s hooks were heard, or nil if never. Backs the Setup panel's
+    /// per-agent rows and the empty-state pointer (`lastHookAt(for: .claude) == nil`).
+    func lastHookAt(for source: AgentSource) -> Date? {
+        lastHookBySource[source]
+    }
+
+    /// The UserDefaults key a source's last-hook timestamp is persisted under.
+    private static func lastHookKey(for source: AgentSource) -> String {
+        switch source {
+        case .claude: return "lastHookAtClaude"
+        case .copilot: return "lastHookAtCopilot"
+        }
+    }
+
+    init() {
+        // Seed the per-source timestamps from persistence so the Setup panel and empty-state
+        // pointer don't claim "never heard from" for a plugin that was working before the last
+        // relaunch. The overall `lastHookAt` is the newest of the persisted per-source values,
+        // so it needs no key of its own.
+        var seeded: [AgentSource: Date] = [:]
+        for source in [AgentSource.claude, .copilot] {
+            if let date = UserDefaults.standard.object(forKey: Self.lastHookKey(for: source)) as? Date {
+                seeded[source] = date
+            }
+        }
+        lastHookBySource = seeded
+        lastHookAt = seeded.values.max()
+    }
+
+    /// Records that a hook event just arrived from `source`, updating the overall and
+    /// per-source timestamps and persisting the per-source one. Called for every event in
+    /// `submit` before any per-event routing, so the health signal reflects that the plugin
+    /// reached us even for events that raise no row. Events are low-rate, so a UserDefaults
+    /// write per event is cheap.
+    private func recordHook(from source: AgentSource) {
+        let now = Date()
+        lastHookAt = now
+        lastHookBySource[source] = now
+        UserDefaults.standard.set(now, forKey: Self.lastHookKey(for: source))
+    }
+
     /// Number of items still awaiting a response (excludes informational rows).
     var pendingCount: Int {
         items.filter { $0.needsResponse }.count
@@ -459,6 +512,10 @@ final class QueueStore: ObservableObject {
         let parsed = HookPayload(data: payload)
         let agentName = source.shortName
         DebugLog.logEvent("→ \(source.rawValue)/\(event.rawValue)", raw: payload)
+
+        // Every event — even ones that raise no row (a muted toggle, an unparsable ask) —
+        // proves the plugin reached us, so stamp the health timestamp up front.
+        recordHook(from: source)
 
         // Every event from a session counts as "watching" it, until it ends or goes quiet.
         if !parsed.sessionID.isEmpty, event != .sessionEnd {

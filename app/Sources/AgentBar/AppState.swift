@@ -10,9 +10,21 @@ final class AppState: ObservableObject {
     let server = HookServer()
     let notifications = NotificationManager()
 
+    /// The loopback port the hook server is currently listening on, or nil when it isn't
+    /// running. Published from `HookServer`'s listener state (via `setServerPort`) so the
+    /// Setup panel's "Local server" check reflects the live pipeline rather than the last
+    /// value written to `server.json`.
+    @Published private(set) var serverPort: UInt16?
+
     private init() {
         registerDefaults()
         queue.notificationManager = notifications
+    }
+
+    /// Records the hook server's listening port (or nil when it stops). Called by
+    /// `HookServer` from its listener-state handler, which hops to the main actor first.
+    func setServerPort(_ port: UInt16?) {
+        serverPort = port
     }
 
     /// Called from the app delegate on launch.

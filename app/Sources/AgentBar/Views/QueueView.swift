@@ -785,6 +785,24 @@ struct QueueView: View {
             Text("start a Claude Code or Copilot session · standing by")
                 .font(feedFont(11))
                 .foregroundStyle(Color.feedSub)
+            // When the Claude plugin has never sent a single hook, nothing here will ever
+            // light up — point at the Setup panel so an unconfigured pipeline is diagnosable
+            // rather than a silent forever-empty state. Suppressed once any Claude hook has
+            // been heard (a genuinely quiet roster stays calm).
+            if queue.lastHookAt(for: .claude) == nil {
+                SettingsLink {
+                    Text("plugin not detected · check setup in settings")
+                        .font(feedFont(10))
+                        .foregroundStyle(Color.feedDim)
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded {
+                    // Same accessory-app activation trick as `settingsGear`: defer so the
+                    // Settings window comes to the front instead of opening buried.
+                    DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
+                })
+                .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)

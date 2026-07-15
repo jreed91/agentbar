@@ -42,9 +42,16 @@ final class HookServer {
                 case .ready:
                     if let rawPort = self?.listener?.port?.rawValue {
                         self?.publishServerFile(port: rawPort)
+                        // Mirror the live port to the main actor for the Setup panel's
+                        // "Local server" health check. Hop exactly like `dispatch` does —
+                        // this handler runs on the listener's own queue, and `AppState` is
+                        // @MainActor. Kept SwiftUI-free: `AppState` imports only Foundation.
+                        Task { @MainActor in AppState.shared.setServerPort(rawPort) }
                     }
                 case .failed, .cancelled:
-                    break
+                    // The listener is gone, so the port no longer accepts hooks; clear it so
+                    // the Setup panel flips to "not running" rather than a stale port.
+                    Task { @MainActor in AppState.shared.setServerPort(nil) }
                 default:
                     break
                 }

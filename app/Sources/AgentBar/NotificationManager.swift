@@ -26,6 +26,20 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
+    /// The current notification authorization state, for the Setup panel's "Notifications"
+    /// check. Uses the completion-handler API bridged with a continuation (matching the
+    /// `getNotificationCategories` calls elsewhere in this file) and extracts the Sendable
+    /// enum inside the callback, so no non-Sendable `UNNotificationSettings` crosses the
+    /// actor hop. Non-prompting: it only reads state, never requests authorization.
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        let center = self.center
+        return await withCheckedContinuation { continuation in
+            center.getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
+        }
+    }
+
     // MARK: - Posting
 
     func post(for item: PendingItem) {

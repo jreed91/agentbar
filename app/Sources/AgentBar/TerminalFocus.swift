@@ -128,6 +128,12 @@ enum TerminalFocus {
 
     // MARK: - Accessibility (window-level focus)
 
+    /// Whether AgentBar currently has Accessibility permission, *without* prompting. This is
+    /// the read-only signal for the Setup panel's optional Accessibility check — distinct from
+    /// `ensureTrusted`, which shows the system permission dialog as a side effect and so must
+    /// never be called just to display status.
+    static var isTrusted: Bool { AXIsProcessTrusted() }
+
     /// Whether AgentBar has Accessibility permission, prompting once if not. Returns the
     /// current trust state; when false the caller degrades to app-level activation, so focus
     /// keeps working (less precisely) until the user grants it in System Settings.

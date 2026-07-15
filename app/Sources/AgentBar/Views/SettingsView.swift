@@ -36,6 +36,8 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            SetupSection()
+
             Section("Notify me about") {
                 Toggle("Questions", isOn: $notifyQuestions)
                 Toggle("Permission requests", isOn: $notifyPermissions)
