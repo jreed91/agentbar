@@ -77,7 +77,9 @@ final class HistoryLog {
     private let currentVersion = 1
 
     /// The real store root: the shared Application Support directory (same as HookServer).
-    static var defaultRoot: URL {
+    /// `nonisolated` because it is referenced from `init`'s default argument, which is
+    /// evaluated in a nonisolated context; it touches no actor state, only FileManager paths.
+    nonisolated static var defaultRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AgentBar", isDirectory: true)
     }

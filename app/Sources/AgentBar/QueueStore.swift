@@ -162,8 +162,11 @@ final class QueueStore: ObservableObject {
         }
     }
 
-    init(historyLog: HistoryLog = HistoryLog()) {
-        self.historyLog = historyLog
+    /// `historyLog` defaults to nil, not `HistoryLog()`: default-argument expressions are
+    /// evaluated in a nonisolated context, so a `@MainActor` initializer can't be a default
+    /// value. The fallback is constructed here in the (main-actor) init body instead.
+    init(historyLog: HistoryLog? = nil) {
+        self.historyLog = historyLog ?? HistoryLog()
 
         // Seed the per-source timestamps from persistence so the Setup panel and empty-state
         // pointer don't claim "never heard from" for a plugin that was working before the last
