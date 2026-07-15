@@ -280,6 +280,9 @@ struct ElapsedLabel: View {
 /// without digging through transcripts. Shown in place of the live feed when toggled.
 struct HistoryView: View {
     let entries: [HistoryEntry]
+    /// Today's rollup, for the digest strip above the list. The view is dumb: the digest is
+    /// computed by `QueueStore`/`HistoryLog` and passed in.
+    let digest: DailyDigest
     let onClear: () -> Void
 
     private static let stamp: DateFormatter = {
@@ -305,6 +308,10 @@ struct HistoryView: View {
             .padding(.vertical, 24)
         } else {
             VStack(alignment: .leading, spacing: 0) {
+                // Today's digest strip, shown only when today saw activity, so a day whose
+                // entries are all from earlier keeps just the list.
+                if digest.hasActivity { digestStrip }
+
                 HStack {
                     Text("RECENT ACTIVITY")
                         .font(feedFont(10, .bold))
@@ -356,6 +363,74 @@ struct HistoryView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 7)
+    }
+
+    // MARK: - Digest strip
+
+    /// A compact, two-line phosphor summary of today, sitting above the RECENT ACTIVITY header:
+    /// a counts line (`TODAY  12 done · 3 questions · …`) and a stats line (`5 projects ·
+    /// busiest agentbar · median wait 40s · …`). Zero/nil segments are omitted so the lines stay
+    /// short; a line with no segments is dropped entirely. Closed with the same hairline the
+    /// section headers use.
+    @ViewBuilder
+    private var digestStrip: some View {
+        let counts = digestCountsLine
+        let stats = digestStatsLine
+        VStack(alignment: .leading, spacing: 3) {
+            if !counts.isEmpty {
+                HStack(spacing: 6) {
+                    Text("TODAY")
+                        .font(feedFont(9.5, .bold))
+                        .tracking(1)
+                        .foregroundStyle(Color.feedSub)
+                    Text(counts)
+                        .font(feedFont(10.5))
+                        .foregroundStyle(Color.feedDim)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+            }
+            if !stats.isEmpty {
+                Text(stats)
+                    .font(feedFont(10.5))
+                    .foregroundStyle(Color.feedDim)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.feedGreen.opacity(0.14)).frame(height: 1)
+        }
+    }
+
+    /// The counts line: finished tasks, questions, permissions, errors — each shown only when
+    /// non-zero, joined with the feed's middot separator.
+    private var digestCountsLine: String {
+        var parts: [String] = []
+        if digest.finished > 0 { parts.append("\(digest.finished) done") }
+        if digest.questions > 0 { parts.append("\(digest.questions) \(plural(digest.questions, "question"))") }
+        if digest.permissions > 0 { parts.append("\(digest.permissions) \(plural(digest.permissions, "permission"))") }
+        if digest.errors > 0 { parts.append("\(digest.errors) \(plural(digest.errors, "error"))") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The stats line: project count, the busiest project (only when more than one, since with
+    /// one it's redundant), and the median/max wait when samples exist.
+    private var digestStatsLine: String {
+        var parts: [String] = []
+        if digest.projects > 0 { parts.append("\(digest.projects) \(plural(digest.projects, "project"))") }
+        if digest.projects > 1, let busiest = digest.busiestProject { parts.append("busiest \(busiest)") }
+        if let median = digest.medianWait { parts.append("median wait \(DurationFormat.short(median))") }
+        if let max = digest.maxWait { parts.append("max \(DurationFormat.short(max))") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func plural(_ n: Int, _ noun: String) -> String {
+        n == 1 ? noun : "\(noun)s"
     }
 }
 

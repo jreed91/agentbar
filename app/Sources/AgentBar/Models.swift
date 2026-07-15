@@ -269,12 +269,33 @@ struct HookPayload {
 /// A single entry in the recent-activity log — a lightweight, immutable snapshot of one
 /// event as it was surfaced, so the popover can show "what happened while I was away"
 /// without re-reading transcripts. Kept small and `Sendable`: no references to live items.
-struct HistoryEntry: Identifiable, Hashable {
-    let id = UUID()
+///
+/// `Codable` so the log survives a relaunch (persisted by `HistoryLog` to `history.json`).
+/// `id` is a stored `let` (not the old `= UUID()` default) so the decoder can restore the
+/// same identity a persisted entry had; a memberwise init with a defaulted `id` keeps every
+/// construction site that doesn't care about identity (all of them) unchanged. The explicit
+/// `CodingKeys` pins the on-disk field names so a future property rename can't silently
+/// invalidate stored history.
+struct HistoryEntry: Identifiable, Hashable, Codable {
+    let id: UUID
     let at: Date
     let project: String
     let status: FeedStatus
     let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, at, project, status, summary
+    }
+
+    /// Memberwise init with a freshly minted `id` by default: callers surfacing a new event
+    /// never pass one, while the decoder (and any test asserting on identity) can supply it.
+    init(id: UUID = UUID(), at: Date, project: String, status: FeedStatus, summary: String) {
+        self.id = id
+        self.at = at
+        self.project = project
+        self.status = status
+        self.summary = summary
+    }
 }
 
 /// Formats a turn/wait duration compactly: `4s`, `47s`, `2m 13s`, `1h 04m`. Used for the
@@ -304,7 +325,13 @@ enum InfoCategory {
 /// The status a feed line renders with — the live-feed design (2a) tags every row with one
 /// of these and derives its mascot mood from the set of active statuses. This is a pure,
 /// UI-free classification; the view maps it to colors and labels.
-enum FeedStatus: Equatable {
+///
+/// Backed by a `String` raw value so a `HistoryEntry` carrying a status can round-trip
+/// through `Codable` (the persisted activity log). The raw values are the case names and are
+/// written to disk, so they must stay stable across releases — don't rename them. Adding a
+/// raw type is source-compatible with the enum's existing use (switches, `==`), since a
+/// raw-valued enum is still `Equatable`.
+enum FeedStatus: String, Codable {
     case permission
     case question
     case working

@@ -49,7 +49,7 @@ final class QueueStoreTests: XCTestCase {
     func testStopClearsWorkingRowEvenWhenTaskFinishedNotificationDisabled() {
         UserDefaults.standard.set(true, forKey: "notifyWorking")
         UserDefaults.standard.set(false, forKey: "notifyTaskFinished")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-stop"
 
         queue.submit(event: .working, payload: payload(sessionID: session))
@@ -63,7 +63,7 @@ final class QueueStoreTests: XCTestCase {
     func testStopFailureClearsWorkingRowEvenWhenErrorNotificationDisabled() {
         UserDefaults.standard.set(true, forKey: "notifyWorking")
         UserDefaults.standard.set(false, forKey: "notifyErrors")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-fail"
 
         queue.submit(event: .working, payload: payload(sessionID: session))
@@ -77,7 +77,7 @@ final class QueueStoreTests: XCTestCase {
     func testSessionEndClearsWorkingRowEvenWhenSessionEndNotificationDisabled() {
         UserDefaults.standard.set(true, forKey: "notifyWorking")
         UserDefaults.standard.set(false, forKey: "notifySessionEnd")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-end"
 
         queue.submit(event: .working, payload: payload(sessionID: session))
@@ -93,7 +93,7 @@ final class QueueStoreTests: XCTestCase {
     func testStopWithNotificationSupersedesWorkingWithDone() {
         UserDefaults.standard.set(true, forKey: "notifyWorking")
         UserDefaults.standard.set(true, forKey: "notifyTaskFinished")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-done"
 
         queue.submit(event: .working, payload: payload(sessionID: session))

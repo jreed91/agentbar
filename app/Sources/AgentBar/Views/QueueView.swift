@@ -86,7 +86,7 @@ struct QueueView: View {
             // since the popover is anchored under the icon at the top).
             Group {
                 if showHistory {
-                    HistoryView(entries: queue.history, onClear: { queue.clearHistory() })
+                    HistoryView(entries: queue.history, digest: queue.historyDigest(), onClear: { queue.clearHistory() })
                 } else if queue.sessionRows.isEmpty {
                     emptyState
                 } else {
@@ -266,7 +266,7 @@ struct QueueView: View {
 
     private var titleBar: some View {
         HStack(spacing: 8) {
-            Text("agentbar — \(queue.sessionRows.count) \(queue.sessionRows.count == 1 ? "session" : "sessions")")
+            Text(sessionCountLabel)
                 .font(feedFont(10.5))
                 .foregroundStyle(Color.feedSub)
                 .lineLimit(1)
@@ -275,6 +275,7 @@ struct QueueView: View {
             filterToggle
             historyToggle
             settingsGear
+            quitButton
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
@@ -282,6 +283,20 @@ struct QueueView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.feedGreen.opacity(0.22)).frame(height: 1)
         }
+    }
+
+    /// The title-bar session tally, from the *displayed* roster (so it honors the live-only
+    /// filter) with a live facet: "N sessions · M live". With the live-only filter on every
+    /// shown row is live, so N == M — collapse to a single "M live" rather than the redundant
+    /// "M sessions · M live". Singular/plural is handled on the roster count.
+    private var sessionCountLabel: String {
+        let rows = displayedRows
+        let total = rows.count
+        let live = rows.filter(\.isLive).count
+        if liveSessionsOnly {
+            return "agentbar — \(live) live"
+        }
+        return "agentbar — \(total) \(total == 1 ? "session" : "sessions") · \(live) live"
     }
 
     /// Filters the roster to live sessions only, hiding quiet historical transcripts. Hidden
@@ -327,6 +342,22 @@ struct QueueView: View {
             // Settings window opens buried. Defer activation so it comes to the front.
             DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
         })
+    }
+
+    /// Quits AgentBar. As an `LSUIElement` accessory the app never activates and shows no
+    /// main menu, so the standard menu-bar "Quit" is out of reach — this button (and the ⌘Q
+    /// handled in `handleKey`) is the only in-app way out. Styled like the other title-bar
+    /// icons so it sits quietly beside them.
+    private var quitButton: some View {
+        Button {
+            NSApp.terminate(nil)
+        } label: {
+            Image(systemName: "power")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.feedSub)
+        }
+        .buttonStyle(.plain)
+        .help("Quit AgentBar")
     }
 
     // MARK: - Hero
@@ -421,23 +452,27 @@ struct QueueView: View {
         var id: Int { group }
     }
 
-    /// Buckets rows into the dashboard's three states — needs you (0), working (1), quiet (2)
-    /// — dropping empty buckets and keeping the store's newest-first order within each.
+    /// Buckets rows into the dashboard's four states — needs you (0), working (1), error (2),
+    /// quiet (3) — dropping empty buckets and keeping the store's newest-first order within
+    /// each.
     private func groupedRows(_ rows: [SessionRow]) -> [SessionSection] {
         var buckets: [Int: [SessionRow]] = [:]
         for row in rows { buckets[groupOf(row), default: []].append(row) }
-        return [0, 1, 2].compactMap { group in
+        return [0, 1, 2, 3].compactMap { group in
             guard let rows = buckets[group], !rows.isEmpty else { return nil }
             return SessionSection(group: group, rows: rows)
         }
     }
 
-    /// Which dashboard bucket a row's status belongs to (mirrors `dashboardStrip`).
+    /// Which dashboard bucket a row's status belongs to (mirrors `dashboardStrip`). Errors get
+    /// their own bucket so an errored session files under a distinct ERROR header rather than
+    /// the least-urgent QUIET one.
     private func groupOf(_ row: SessionRow) -> Int {
         switch row.status {
         case .permission, .question: return 0
         case .working: return 1
-        case .done, .error, .idle: return 2
+        case .error: return 2
+        case .done, .idle: return 3
         }
     }
 
@@ -448,7 +483,8 @@ struct QueueView: View {
             switch group {
             case 0: return ("●", "NEEDS YOU", .stPermission)
             case 1: return ("⚙", "WORKING", .stWorking)
-            default: return ("○", "IDLE", .feedDim)
+            case 2: return ("⚠", "ERROR", .stPermission)
+            default: return ("○", "QUIET", .feedDim)
             }
         }()
         return HStack(spacing: 6) {
@@ -485,13 +521,18 @@ struct QueueView: View {
 
     /// A pinned at-a-glance summary of the parallel roster — how many sessions need you, are
     /// working, or are quiet — sitting above the scrolling feed. Read-only, like the rest of
-    /// AgentBar: it's the multi-agent overview, not a control surface.
+    /// AgentBar: it's the multi-agent overview, not a control surface. The three primary stats
+    /// are always present; the error stat is appended only when something has errored, so the
+    /// strip stays calm on a healthy roster.
     private var dashboardStrip: some View {
         let summary = queue.dashboardSummary
         return HStack(spacing: 14) {
             summaryStat(symbol: "●", count: summary.needsYou, label: "need you", color: .stPermission)
             summaryStat(symbol: "⚙", count: summary.working, label: "working", color: .stWorking)
-            summaryStat(symbol: "○", count: summary.idle, label: "idle", color: .feedDim)
+            summaryStat(symbol: "○", count: summary.idle, label: "quiet", color: .feedDim)
+            if summary.errors > 0 {
+                summaryStat(symbol: "⚠", count: summary.errors, label: "err", color: .stPermission)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
@@ -744,6 +785,24 @@ struct QueueView: View {
             Text("start a Claude Code or Copilot session · standing by")
                 .font(feedFont(11))
                 .foregroundStyle(Color.feedSub)
+            // When the Claude plugin has never sent a single hook, nothing here will ever
+            // light up — point at the Setup panel so an unconfigured pipeline is diagnosable
+            // rather than a silent forever-empty state. Suppressed once any Claude hook has
+            // been heard (a genuinely quiet roster stays calm).
+            if queue.lastHookAt(for: .claude) == nil {
+                SettingsLink {
+                    Text("plugin not detected · check setup in settings")
+                        .font(feedFont(10))
+                        .foregroundStyle(Color.feedDim)
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded {
+                    // Same accessory-app activation trick as `settingsGear`: defer so the
+                    // Settings window comes to the front instead of opening buried.
+                    DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
+                })
+                .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
@@ -753,7 +812,7 @@ struct QueueView: View {
 
     private var promptBar: some View {
         HStack(spacing: 0) {
-            Text("◉ watching \(queue.sessionCount) \(queue.sessionCount == 1 ? "session" : "sessions") · notify-only")
+            Text("◉ notify-only · answers happen in your terminal")
                 .font(feedFont(11, .medium))
                 .foregroundStyle(Color.feedGreen)
                 .lineLimit(1)
@@ -949,7 +1008,7 @@ struct QueueView: View {
     // MARK: - Keyboard navigation
 
     /// The rows in the exact order they appear in the grouped feed, so ↑/↓ walk the list as
-    /// the eye reads it (needs you → working → idle), matching `feed`.
+    /// the eye reads it (needs you → working → error → quiet), matching `feed`.
     private var orderedRows: [SessionRow] {
         groupedRows(displayedRows).flatMap(\.rows)
     }
@@ -989,8 +1048,18 @@ struct QueueView: View {
     /// handled (and should be swallowed). Only acts on the live session feed — the history view
     /// and any modifier-chorded key are left alone.
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard !showHistory else { return false }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // ⌘Q quits. As an `LSUIElement` accessory AgentBar never activates and has no main
+        // menu, so the standard ⌘Q is unreachable; handling it here makes it work while the
+        // popover is key. Checked before the modifier guard below (which drops every other
+        // ⌘/⌃/⌥ chord) and before the history guard, so quit works from any popover view.
+        if modifiers == [.command], event.charactersIgnoringModifiers?.lowercased() == "q" {
+            NSApp.terminate(nil)
+            return true
+        }
+
+        guard !showHistory else { return false }
         guard modifiers.isDisjoint(with: [.command, .control, .option]) else { return false }
 
         let rows = orderedRows

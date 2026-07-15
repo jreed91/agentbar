@@ -55,10 +55,13 @@ struct SessionRow: Identifiable {
 }
 
 /// At-a-glance counts for the dashboard summary strip, bucketed from the merged session
-/// rows: sessions waiting on you (permission/question), actively working, and quiet.
+/// rows: sessions waiting on you (permission/question), actively working, errored, and quiet
+/// (done or idle). Errors get their own bucket so an errored session is never folded into the
+/// least-urgent "quiet" tier.
 struct DashboardSummary {
     let needsYou: Int
     let working: Int
+    let errors: Int
     let idle: Int
 }
 
@@ -113,11 +116,18 @@ final class QueueStore: ObservableObject {
     /// the session ends.
     private var sessionMode: [String: String] = [:]
 
-    /// A bounded, newest-first log of recently surfaced events, for the popover's history
-    /// view — "what happened while I was away". Purely informational and capped at
-    /// `historyLimit`, so it never grows unbounded.
+    /// The newest slice of the persisted activity log, mirrored from `historyLog` for the
+    /// popover's history view — "what happened while I was away". The full log (with its 7-day
+    /// retention and daily-digest math) lives in `historyLog`; this published copy is the
+    /// bounded, view-ready set so SwiftUI has a value to observe. The public shape is unchanged
+    /// from when this was an in-memory array, so the views need no changes.
     @Published private(set) var history: [HistoryEntry] = []
-    private let historyLimit = 60
+
+    /// Owns activity-log persistence and the digest rollup. Injectable so tests root it in a
+    /// temp directory instead of the real Application Support tree; the default loads (but does
+    /// not write) the on-disk log at construction, so merely creating a `QueueStore` never
+    /// touches the file — only an append/clear persists.
+    private let historyLog: HistoryLog
 
     /// Project working directories the user has muted. Their events still appear in the feed
     /// and still badge the icon, but post no banner and play no sound. Mirrored to
@@ -125,6 +135,69 @@ final class QueueStore: ObservableObject {
     @Published private(set) var mutedProjects: Set<String> = Set(
         (UserDefaults.standard.array(forKey: "mutedProjects") as? [String]) ?? []
     )
+
+    /// When any hook event was last received, across all agents. Drives the Setup panel's
+    /// "plugin is talking to us" health check and the popover's "plugin not detected" pointer.
+    /// Seeded from persistence at init (see `lastHookBySource`) so a relaunch after real
+    /// activity doesn't wrongly read as "never heard from".
+    @Published private(set) var lastHookAt: Date?
+
+    /// When each agent's hooks were last heard, keyed by source, so the Setup panel can report
+    /// the Claude plugin and the Copilot bridge independently. Persisted per source (keys
+    /// `lastHookAtClaude` / `lastHookAtCopilot`) and reloaded at init; `lastHookAt` is derived
+    /// as the newest of these. Reads go through `lastHookAt(for:)`.
+    @Published private(set) var lastHookBySource: [AgentSource: Date] = [:]
+
+    /// The last time `source`'s hooks were heard, or nil if never. Backs the Setup panel's
+    /// per-agent rows and the empty-state pointer (`lastHookAt(for: .claude) == nil`).
+    func lastHookAt(for source: AgentSource) -> Date? {
+        lastHookBySource[source]
+    }
+
+    /// The UserDefaults key a source's last-hook timestamp is persisted under.
+    private static func lastHookKey(for source: AgentSource) -> String {
+        switch source {
+        case .claude: return "lastHookAtClaude"
+        case .copilot: return "lastHookAtCopilot"
+        }
+    }
+
+    /// `historyLog` defaults to nil, not `HistoryLog()`: default-argument expressions are
+    /// evaluated in a nonisolated context, so a `@MainActor` initializer can't be a default
+    /// value. The fallback is constructed here in the (main-actor) init body instead.
+    init(historyLog: HistoryLog? = nil) {
+        self.historyLog = historyLog ?? HistoryLog()
+
+        // Seed the per-source timestamps from persistence so the Setup panel and empty-state
+        // pointer don't claim "never heard from" for a plugin that was working before the last
+        // relaunch. The overall `lastHookAt` is the newest of the persisted per-source values,
+        // so it needs no key of its own.
+        var seeded: [AgentSource: Date] = [:]
+        for source in [AgentSource.claude, .copilot] {
+            if let date = UserDefaults.standard.object(forKey: Self.lastHookKey(for: source)) as? Date {
+                seeded[source] = date
+            }
+        }
+        lastHookBySource = seeded
+        lastHookAt = seeded.values.max()
+
+        // Seed the published history from the persisted log so a relaunch shows what happened
+        // while the app was away, not an empty list. `self.` — the parameter of the same name
+        // is the optional; the resolved property is what we read.
+        history = self.historyLog.entriesForView
+    }
+
+    /// Records that a hook event just arrived from `source`, updating the overall and
+    /// per-source timestamps and persisting the per-source one. Called for every event in
+    /// `submit` before any per-event routing, so the health signal reflects that the plugin
+    /// reached us even for events that raise no row. Events are low-rate, so a UserDefaults
+    /// write per event is cheap.
+    private func recordHook(from source: AgentSource) {
+        let now = Date()
+        lastHookAt = now
+        lastHookBySource[source] = now
+        UserDefaults.standard.set(now, forKey: Self.lastHookKey(for: source))
+    }
 
     /// Number of items still awaiting a response (excludes informational rows).
     var pendingCount: Int {
@@ -149,36 +222,48 @@ final class QueueStore: ObservableObject {
         items.filter { $0.feedStatus == .question }.count
     }
 
-    /// The overall mascot mood, in priority order: permission out-shouts a question, which
-    /// out-shouts background work, which out-shouts a finished task, and an empty queue is
-    /// happy. Mirrors the design's per-scenario mood.
+    /// The overall mascot mood, in priority order matching the hero's tiers: a pending
+    /// permission out-shouts a pending question, which out-shouts work in flight (a live
+    /// working item *or* a working session row), which out-shouts a just-finished task (a
+    /// `.done` info row still present). A quiet or empty roster is simply happy — `.done` is
+    /// reserved for when something actually finished, not for standing by.
     var mood: FeedMood {
-        if items.isEmpty { return .happy }
         if pendingPermissions > 0 { return .permission }
         if pendingQuestions > 0 { return .question }
-        if items.contains(where: { $0.feedStatus == .working }) { return .working }
-        return .done
+        if items.contains(where: { $0.feedStatus == .working }) || rosterFacts().anyWorking {
+            return .working
+        }
+        if items.contains(where: { $0.feedStatus == .done }) { return .done }
+        return .happy
     }
 
     /// The ASCII face shown in the menu-bar label (design `asciiMini`).
     var menuBarFace: String { mood.miniFace }
 
     /// At-a-glance dashboard counts bucketed from the merged session rows: how many sessions
-    /// need you (a permission or question is waiting), are actively working, and are quiet
-    /// (idle, finished, or errored). Drives the popover's dashboard summary strip.
+    /// need you (a permission or question is waiting), are actively working, have errored, and
+    /// are quiet (finished or idle). Errors bucket separately so an errored session is surfaced
+    /// rather than folded into the calm "quiet" count. Drives the popover's dashboard summary
+    /// strip.
     var dashboardSummary: DashboardSummary {
-        var needsYou = 0, working = 0, idle = 0
+        var needsYou = 0, working = 0, errors = 0, idle = 0
         for row in sessionRows {
             switch row.status {
             case .permission, .question: needsYou += 1
             case .working: working += 1
-            case .done, .error, .idle: idle += 1
+            case .error: errors += 1
+            case .done, .idle: idle += 1
             }
         }
-        return DashboardSummary(needsYou: needsYou, working: working, idle: idle)
+        return DashboardSummary(needsYou: needsYou, working: working, errors: errors, idle: idle)
     }
 
     /// The hero headline in the popover — a short summary of what, if anything, needs you.
+    /// Attention counts stay item-based (they are precise); the working and quiet tiers are
+    /// roster-based (see `rosterFacts`) so the hero agrees with the dashboard strip and the
+    /// roster beneath it instead of reading "Task complete" over a WORKING group or an empty
+    /// feed. Copy is source-aware: the agent's name comes from the sessions in play, not a
+    /// hard-coded "Claude".
     var headline: String {
         let permissions = pendingPermissions
         let questions = pendingQuestions
@@ -189,32 +274,107 @@ final class QueueStore: ObservableObject {
             } else if permissions > 0 {
                 return permissions == 1 ? "Permission needed" : "\(permissions) permissions need you"
             } else {
-                return questions == 1 ? "Claude has a question" : "\(questions) questions waiting"
+                return questions == 1 ? "\(attentionAgentName) has a question" : "\(questions) questions waiting"
             }
         }
-        if items.contains(where: { $0.feedStatus == .working }) { return "Claude's on it" }
-        return "Task complete"
+        let facts = rosterFacts()
+        if items.contains(where: { $0.feedStatus == .working }) || facts.anyWorking {
+            if facts.workingSources.count == 1, let only = facts.workingSources.first {
+                return "\(only.shortName)'s on it"
+            }
+            return "Agents at work"
+        }
+        if facts.count == 0 { return "Standing by" }
+        return "All quiet"
     }
 
-    /// The hero subline — a one-line breakdown under the headline.
+    /// The hero subline — a one-line breakdown under the headline, mirroring `headline`'s tiers.
     var subline: String {
         let permissions = pendingPermissions
         let questions = pendingQuestions
         if permissions > 0 && questions > 0 {
             return "\(countPhrase(permissions, "permission")) · \(countPhrase(questions, "question"))"
         } else if permissions > 0 {
-            return permissions == 1 ? "Claude wants to run a command." : "\(permissions) commands need approval."
+            return permissions == 1 ? "\(attentionAgentName) wants to run a command." : "\(permissions) commands need approval."
         } else if questions > 0 {
             return questions == 1 ? "One session is waiting on your answer." : "\(questions) sessions are waiting on you."
         }
-        if items.contains(where: { $0.feedStatus == .working }) {
+        let facts = rosterFacts()
+        if items.contains(where: { $0.feedStatus == .working }) || facts.anyWorking {
+            if facts.workingCount > 1 {
+                return "\(countPhrase(facts.workingCount, "session")) working — nothing needs you."
+            }
             return "Working — nothing needs you yet."
         }
-        return "Recent activity below."
+        if facts.count == 0 { return "Start a Claude Code or Copilot session to watch it here." }
+        return "\(countPhrase(facts.count, "session")) idle — nothing needs you."
     }
 
     private func countPhrase(_ n: Int, _ noun: String) -> String {
         "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+
+    /// The agent name for attention copy: the shared source's short name when every pending
+    /// attention item comes from one agent (so "Copilot has a question" reads honestly), or a
+    /// neutral "An agent" when a mix of agents is waiting. Keeps the hero from hard-coding
+    /// "Claude" on a Copilot-only or mixed roster.
+    private var attentionAgentName: String {
+        let sources = Set(items.filter { $0.needsResponse }.map(\.source))
+        if sources.count == 1, let only = sources.first { return only.shortName }
+        return "An agent"
+    }
+
+    /// Roster-derived facts the hero copy needs, computed from a single `sessionRows` pass so
+    /// the quiet/working tiers of `headline`/`subline`/`mood` agree with the dashboard strip.
+    private struct RosterFacts {
+        /// Total session rows — the roster size the dashboard strip and feed show.
+        let count: Int
+        /// How many rows are actively working.
+        let workingCount: Int
+        /// The distinct agents among the working rows, used to name the working headline: one
+        /// source → its name ("Claude's on it"), mixed or none → neutral copy ("Agents at work").
+        let workingSources: Set<AgentSource>
+        /// Whether any session is working right now.
+        var anyWorking: Bool { workingCount > 0 }
+    }
+
+    /// Computes `RosterFacts` from one `sessionRows` evaluation. `sessionRows` does real merge
+    /// work, so this runs once per `headline`/`subline`/`mood` read that reaches the roster
+    /// tiers — deliberately not cached across runloop ticks, since the roster changes as
+    /// sessions come and go and a stale snapshot would let the hero drift from the feed again.
+    private func rosterFacts() -> RosterFacts {
+        let rows = sessionRows
+        var workingCount = 0
+        var workingSources: Set<AgentSource> = []
+        for row in rows where row.status == .working {
+            workingCount += 1
+            workingSources.insert(row.source)
+        }
+        return RosterFacts(count: rows.count, workingCount: workingCount, workingSources: workingSources)
+    }
+
+    /// The session whose oldest unanswered attention item (question / permission / MCP input)
+    /// has been waiting the longest across the whole roster — the target of the "Focus what
+    /// needs me" global hotkey. Nil when nothing needs you.
+    ///
+    /// This is deliberately the mirror image of QueueView's `focusLatestAttention()`, which
+    /// jumps to the *newest* prompt. Clicking the hero follows your eye to whatever just came
+    /// up; the global hotkey is a press-without-looking backlog tool, so it sends you to the
+    /// prompt that has been blocked longest — nothing starves while you work in another app.
+    /// A row's own age is its oldest pending item, so a session sitting on two prompts is
+    /// ranked by the earlier of them.
+    func longestWaitingAttentionRow() -> SessionRow? {
+        sessionRows
+            .compactMap { row -> (row: SessionRow, waitingSince: Date)? in
+                let oldest = row.liveItems
+                    .filter { $0.needsResponse }
+                    .map(\.createdAt)
+                    .min()
+                guard let oldest else { return nil }
+                return (row, oldest)
+            }
+            .min(by: { $0.waitingSince < $1.waitingSince })?
+            .row
     }
 
     // MARK: - Session roster (disk scan + live merge)
@@ -393,6 +553,10 @@ final class QueueStore: ObservableObject {
         let parsed = HookPayload(data: payload)
         let agentName = source.shortName
         DebugLog.logEvent("→ \(source.rawValue)/\(event.rawValue)", raw: payload)
+
+        // Every event — even ones that raise no row (a muted toggle, an unparsable ask) —
+        // proves the plugin reached us, so stamp the health timestamp up front.
+        recordHook(from: source)
 
         // Every event from a session counts as "watching" it, until it ends or goes quiet.
         if !parsed.sessionID.isEmpty, event != .sessionEnd {
@@ -634,9 +798,19 @@ final class QueueStore: ObservableObject {
     /// session and clears their banners. Called when a prompt has been answered in the
     /// terminal (a tool completed, or the turn ended), since there is no reply channel to
     /// clear them otherwise. Informational status rows are left for their own lifecycle.
+    ///
+    /// Each cleared prompt was waiting on you and is now resolved — a tool finished, a new turn
+    /// began, or a successor prompt superseded it (all of which mean it was answered in the
+    /// terminal) — so record how long it sat, for the daily digest. This is the terminal-side
+    /// clear path; the user's manual-dismiss path is `dismiss(_:)`, and the two don't overlap
+    /// (whichever removes an item first, the other no longer finds it), so a prompt is sampled
+    /// exactly once.
     private func clearAttention(for sessionID: String) {
         let resolved = items.filter { $0.sessionID == sessionID && $0.needsResponse }
-        for item in resolved { notificationManager?.remove(item) }
+        for item in resolved {
+            notificationManager?.remove(item)
+            recordWait(for: item)
+        }
         items.removeAll { item in resolved.contains { $0.id == item.id } }
     }
 
@@ -656,8 +830,15 @@ final class QueueStore: ObservableObject {
 
     /// Removes an item from the queue and clears its banner. Used both by the user's
     /// dismiss button and by the auto-expiry timer for informational rows.
+    ///
+    /// When the user dismisses an attention prompt by hand, sample how long it waited for the
+    /// daily digest — this is the manual-dismiss counterpart to `clearAttention`'s terminal
+    /// path. Guarded on `needsResponse` so the auto-expiry of an informational row (which also
+    /// routes through here) is never counted as a wait, and so an item can't be double-sampled
+    /// (an info row has no wait; an attention row clears via exactly one of these two paths).
     func dismiss(_ item: PendingItem) {
         notificationManager?.remove(item)
+        if item.needsResponse { recordWait(for: item) }
         items.removeAll { $0.id == item.id }
     }
 
@@ -733,9 +914,9 @@ final class QueueStore: ObservableObject {
 
     // MARK: - History
 
-    /// Appends a newest-first snapshot of a surfaced event to the activity log, trimming to
-    /// `historyLimit`. Working/thinking rows are transient and never recorded (they route
-    /// through `enqueueWorking`, which does not call this).
+    /// Appends a snapshot of a surfaced event to the persistent activity log and mirrors the
+    /// newest slice into `history` for the view. Working/thinking rows are transient and never
+    /// recorded (they route through `enqueueWorking`, which does not call this).
     private func recordHistory(_ item: PendingItem) {
         let project = item.cwd.isEmpty ? "—" : URL(fileURLWithPath: item.cwd).lastPathComponent
         let entry = HistoryEntry(
@@ -744,12 +925,29 @@ final class QueueStore: ObservableObject {
             status: item.feedStatus,
             summary: item.summaryLine
         )
-        history.insert(entry, at: 0)
-        if history.count > historyLimit {
-            history.removeLast(history.count - historyLimit)
-        }
+        historyLog.append(entry)
+        history = historyLog.entriesForView
     }
 
-    /// Clears the activity log (bound to a control in the history view).
-    func clearHistory() { history.removeAll() }
+    /// Records how long an answered/dismissed attention prompt sat waiting, into the persistent
+    /// log's wait samples (for the daily digest). The wait is measured from the item's
+    /// `createdAt` to now, the moment it cleared. Only ever called for items that `needsResponse`
+    /// so an auto-expiring info row is never counted (see `clearAttention` / `dismiss`).
+    private func recordWait(for item: PendingItem) {
+        let seconds = Date().timeIntervalSince(item.createdAt)
+        historyLog.record(wait: WaitSample(at: Date(), seconds: seconds))
+    }
+
+    /// The daily digest for `day` (defaults to today), for the history view's summary strip.
+    /// Pure and cheap — recomputed from the persisted log each read.
+    func historyDigest(for day: Date = Date()) -> DailyDigest {
+        historyLog.digest(for: day)
+    }
+
+    /// Clears the activity log (bound to a control in the history view). Clears the persisted
+    /// entries and wait samples, then empties the mirrored view copy.
+    func clearHistory() {
+        historyLog.clear()
+        history = historyLog.entriesForView
+    }
 }

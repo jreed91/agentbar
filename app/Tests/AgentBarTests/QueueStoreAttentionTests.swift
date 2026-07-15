@@ -54,7 +54,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testAskEnqueuesQuestionAndResolvedClearsIt() {
         UserDefaults.standard.set(true, forKey: "notifyQuestions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-ask"
 
         queue.submit(event: .ask, payload: askPayload(sessionID: session))
@@ -68,7 +68,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testResolvedClearsPendingPermission() {
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-perm-allowed"
 
         queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
@@ -83,7 +83,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testDeniedClearsPendingPermission() {
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-perm-denied"
 
         queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
@@ -97,7 +97,7 @@ final class QueueStoreAttentionTests: XCTestCase {
     func testDeniedAssumesNoWorkingStatus() {
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
         UserDefaults.standard.set(true, forKey: "notifyWorking")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-perm-denied-quiet"
 
         queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
@@ -109,7 +109,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testNewTurnClearsPendingPermission() {
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-perm"
 
         queue.submit(event: .permission, payload: permissionPayload(sessionID: session))
@@ -125,7 +125,7 @@ final class QueueStoreAttentionTests: XCTestCase {
     func testNewPromptSupersedesThePreviousOne() {
         UserDefaults.standard.set(true, forKey: "notifyQuestions")
         UserDefaults.standard.set(true, forKey: "notifyPermissions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-supersede"
 
         queue.submit(event: .ask, payload: askPayload(sessionID: session))
@@ -138,7 +138,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testMalformedAskIsDropped() {
         UserDefaults.standard.set(true, forKey: "notifyQuestions")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-malformed"
 
         queue.submit(event: .ask, payload: plainPayload(sessionID: session))
@@ -151,7 +151,7 @@ final class QueueStoreAttentionTests: XCTestCase {
     func testIdleNotifySuppressedWhilePromptPending() {
         UserDefaults.standard.set(true, forKey: "notifyQuestions")
         UserDefaults.standard.set(true, forKey: "notifyIdle")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-idle-dedupe"
 
         queue.submit(event: .ask, payload: askPayload(sessionID: session))
@@ -163,7 +163,7 @@ final class QueueStoreAttentionTests: XCTestCase {
 
     func testIdleNotifyEnqueuesWhenNothingPending() {
         UserDefaults.standard.set(true, forKey: "notifyIdle")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         let session = "sess-idle"
 
         queue.submit(event: .notify, payload: plainPayload(sessionID: session))
@@ -181,7 +181,7 @@ final class QueueStoreAttentionTests: XCTestCase {
         UserDefaults.standard.set(true, forKey: "dndEnabled")
         UserDefaults.standard.set(9, forKey: "dndStartHour")
         UserDefaults.standard.set(17, forKey: "dndEndHour")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
 
         XCTAssertTrue(queue.inDoNotDisturb(now: date(atHour: 9)), "start hour is inside")
         XCTAssertTrue(queue.inDoNotDisturb(now: date(atHour: 12)))
@@ -193,7 +193,7 @@ final class QueueStoreAttentionTests: XCTestCase {
         UserDefaults.standard.set(true, forKey: "dndEnabled")
         UserDefaults.standard.set(22, forKey: "dndStartHour")
         UserDefaults.standard.set(8, forKey: "dndEndHour")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
 
         XCTAssertTrue(queue.inDoNotDisturb(now: date(atHour: 23)))
         XCTAssertTrue(queue.inDoNotDisturb(now: date(atHour: 3)))
@@ -205,7 +205,7 @@ final class QueueStoreAttentionTests: XCTestCase {
         UserDefaults.standard.set(false, forKey: "dndEnabled")
         UserDefaults.standard.set(0, forKey: "dndStartHour")
         UserDefaults.standard.set(23, forKey: "dndEndHour")
-        let queue = QueueStore()
+        let queue = makeIsolatedQueueStore()
         XCTAssertFalse(queue.inDoNotDisturb(now: date(atHour: 12)), "disabled is never in DND")
 
         UserDefaults.standard.set(true, forKey: "dndEnabled")
