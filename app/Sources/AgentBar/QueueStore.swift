@@ -182,8 +182,9 @@ final class QueueStore: ObservableObject {
         lastHookAt = seeded.values.max()
 
         // Seed the published history from the persisted log so a relaunch shows what happened
-        // while the app was away, not an empty list.
-        history = historyLog.entriesForView
+        // while the app was away, not an empty list. `self.` — the parameter of the same name
+        // is the optional; the resolved property is what we read.
+        history = self.historyLog.entriesForView
     }
 
     /// Records that a hook event just arrived from `source`, updating the overall and
