@@ -11,7 +11,7 @@
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
     "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^10.0.1",
-    "semantic-release": "^25.0.7"
+    "@semantic-release/git": "^11.0.1",
+    "semantic-release": "^25.0.8"
   }
 }
