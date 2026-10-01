@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { HttpInit, On } from 'claude-code'
 
 const HOME = '/Users/tester'
@@ -13,16 +14,21 @@ type World = {
   launches: boolean
   /** Whether server.json exists. */
   published: boolean
+  /** What `GET /v1/attention` answers: the sessions waiting on you, and the jump hotkey. */
+  attention?: { sessions: Waiting[]; jump_shortcut: string | null }
 }
+
+type Waiting = { session_id: string; cwd: string; status: string; summary: string; waiting_since: number }
 
 /**
  * Stands in for the machine beneath the mod: the environment, server.json, AgentBar's
  * server, `open`, and the session's model and usage. Returns the posts AgentBar received
  * and the `open` commands run.
  */
-function machine(on: On, port: number, world: World) {
+function machine(on: On, port: number, world: World, { clock = true }: { clock?: boolean } = {}) {
   const posts: Post[] = []
   const opened: string[][] = []
+  let polls = 0
   let arrived: (() => void) | undefined
   const waitForPost = () =>
     new Promise<void>(resolve => {
@@ -42,6 +48,11 @@ function machine(on: On, port: number, world: World) {
     if (!world.running || !ours) return { deny: 'ECONNREFUSED' }
     if (!authorized) return { value: { status: 401, ok: false, headers: {}, text: 'unauthorized' } }
     if (e.url.endsWith('/v1/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
+    if (e.url.endsWith('/v1/attention')) {
+      polls += 1
+      const text = JSON.stringify(world.attention ?? { sessions: [], jump_shortcut: null })
+      return { value: { status: 200, ok: true, headers: {}, text } }
+    }
     posts.push({ url: e.url, init: e.init, body: JSON.parse(e.init?.body ?? '{}') })
     arrived?.()
     return { value: { status: 204, ok: true, headers: {}, text: '' } }
@@ -57,8 +68,8 @@ function machine(on: On, port: number, world: World) {
   on('session.id', async () => ({ value: 'session-1' }))
   on('session.cwd', async () => ({ value: '/work/project' }))
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
-  // The launch wait polls with sleeps; answer them at once.
-  on('clock.sleep', async () => ({ value: undefined }))
+  // The launch wait polls with sleeps; answer them at once (unless the test keeps a clock).
+  if (clock) on('clock.sleep', async () => ({ value: undefined }))
   on('session.usage', async () => ({
     value: { startedAt: 0, context: { tokens: 123_456, window: 1_000_000, percent: 12 }, rateLimits: [] },
   }))
@@ -68,7 +79,11 @@ function machine(on: On, port: number, world: World) {
   on('classic.PermissionRequest', async () => ({}))
   on('classic.Notification', async () => ({}))
 
-  return { posts, opened, waitForPost }
+  // The engine's own session start and band (an empty one), beneath the mod's.
+  on('session.start', async ($, e) => ({ cwd: e.cwd }))
+  on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'Box', props: {}, children: [] }) as never)
+
+  return { posts, opened, waitForPost, polls: () => polls }
 }
 
 describe('forwarding', () => {
@@ -158,6 +173,119 @@ describe('launching and failing open', () => {
 
     expect(reachedBottom).toBe(true)
     expect(result).toEqual({})
+    expect(app.posts).toEqual([])
+  })
+})
+
+describe('the band above the prompt', () => {
+  const BAND = {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 120,
+    scroll: { offset: 0, bodyRows: 9 },
+    view: {},
+  }
+  const waitingOn = (session_id: string, cwd: string, status: string): Waiting => ({
+    session_id,
+    cwd,
+    status,
+    summary: 'Wants to run Bash',
+    waiting_since: 1_700_000_000,
+  })
+  const startSession = ($: Engine, isInteractive = true) =>
+    $.session.start({ cwd: '/work/project', surface: isInteractive ? 'terminal' : null, isInteractive })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`on ${surface}, it names the other sessions waiting, never this one, and Jump focuses the first`, async ($, on) => {
+      const app = machine(on, 41101, {
+        running: true,
+        launches: false,
+        published: true,
+        attention: {
+          sessions: [
+            waitingOn('session-2', '/work/api', 'permission'),
+            waitingOn('session-1', '/work/project', 'question'),
+            waitingOn('session-3', '/work/web', 'question'),
+          ],
+          jump_shortcut: '⌥⇧A',
+        },
+      }, { clock: false })
+      mock.clock(on)
+      await startSession($)
+
+      const ui = await $.ui.mount({ plugin: 'agentbar', surface, component: 'AbovePrompt', props: BAND })
+      const drawn = JSON.stringify(await ui.drawn())
+      expect(drawn).toContain('2 other sessions need you')
+      expect(drawn).toContain('api (permission), web (question)')
+      expect(drawn).not.toContain('project (question)')
+      expect(drawn).toContain('⌥⇧A from anywhere')
+
+      await ui.press({ key: 'jump' })
+      const focus = app.posts.find(p => p.url.endsWith('/v1/focus'))
+      expect(focus?.body).toEqual({ session_id: 'session-2' })
+    })
+  }
+
+  test('it follows AgentBar as sessions start and stop waiting', async ($, on) => {
+    const world: World = { running: true, launches: false, published: true }
+    machine(on, 41102, world, { clock: false })
+    const clock = mock.clock(on)
+    await startSession($)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+
+    world.attention = { sessions: [waitingOn('session-2', '/work/api', 'permission')], jump_shortcut: null }
+    await clock.advance(2000)
+    expect(JSON.stringify(await ui.drawn())).toContain('1 other session needs you')
+
+    world.attention = { sessions: [], jump_shortcut: null }
+    await clock.advance(2000)
+    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+  })
+
+  test('a narrow terminal keeps the count and drops the list', async ($, on) => {
+    machine(on, 41103, {
+      running: true,
+      launches: false,
+      published: true,
+      attention: { sessions: [waitingOn('session-2', '/work/api', 'permission')], jump_shortcut: '⌥⇧A' },
+    }, { clock: false })
+    mock.clock(on)
+    await startSession($)
+
+    const ui = await $.ui.mount({
+      plugin: 'agentbar',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      props: { ...BAND, bodyColumns: 50 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('1 other session needs you')
+    expect(drawn).not.toContain('api (permission)')
+    expect(drawn).not.toContain('from anywhere')
+  })
+
+  test('a poll never launches AgentBar, and with the app down the band stays hidden', async ($, on) => {
+    const app = machine(on, 41104, { running: false, launches: true, published: false }, { clock: false })
+    const clock = mock.clock(on)
+    await startSession($)
+    await clock.advance(10_000)
+
+    const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+    expect(app.opened).toEqual([])
+  })
+
+  test('a non-interactive run never polls', async ($, on) => {
+    const app = machine(on, 41105, { running: true, launches: false, published: true }, { clock: false })
+    const clock = mock.clock(on)
+    await startSession($, false)
+    await clock.advance(10_000)
+
+    expect(app.polls()).toBe(0)
     expect(app.posts).toEqual([])
   })
 })

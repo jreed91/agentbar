@@ -44,10 +44,10 @@ doctor:
 	else \
 		echo "warn app not in /Applications — install the cask or run 'make install'"; \
 	fi
-	@if [ -f "plugin/hooks/agentbar.ts" ]; then \
-		echo "ok   Claude Code mod present (plugin/hooks/agentbar.ts)"; \
+	@if [ -f "plugin/hooks/agentbar.tsx" ]; then \
+		echo "ok   Claude Code mod present (plugin/hooks/agentbar.tsx)"; \
 	else \
-		echo "FAIL plugin/hooks/agentbar.ts missing"; \
+		echo "FAIL plugin/hooks/agentbar.tsx missing"; \
 	fi
 	@if [ -x "bin/agentbar-hook" ]; then \
 		echo "ok   hook bridge present and executable (used by Copilot)"; \
