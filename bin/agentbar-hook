@@ -4,7 +4,7 @@
 #
 # GitHub Copilot CLI's hooks call this script (bundled in AgentBar.app/Contents/Resources).
 # Claude Code no longer does: the Claude plugin is a Claude Code mod
-# (plugin/hooks/agentbar.ts) that posts the same events to the same server itself.
+# (plugin/hooks/agentbar.tsx) that posts the same events to the same server itself.
 # The script also stays as `--selftest`, the pipeline diagnosis `make doctor` runs.
 #
 # Usage: agentbar-hook <event> [agent]

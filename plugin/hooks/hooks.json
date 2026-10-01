@@ -1,1 +1,1 @@
-{ "modules": ["./agentbar.ts"] }
+{ "modules": ["./agentbar.tsx"] }
