@@ -36,12 +36,16 @@ struct SessionRow: Identifiable {
     /// The session's recent-activity trail (from the transcript), oldest-first, for the
     /// read-only drill-in. Empty for a synthesized live-only row not yet scanned from disk.
     let trail: [ActivityEntry]
-    /// The model the session's latest turn ran on (from the transcript), for the row's meta
-    /// line. Nil when unknown.
+    /// The model the session's latest turn ran on, for the row's meta line: live from the
+    /// Claude Code mod when it reported one, else from the transcript. Nil when unknown.
     let model: String?
-    /// Approximate context-window tokens in use on the latest turn (from the transcript), for
-    /// the row's context gauge. Nil when unknown.
+    /// Approximate context-window tokens in use on the latest turn, for the row's context
+    /// gauge: live from the Claude Code mod when it reported them, else from the transcript.
+    /// Nil when unknown.
     let contextTokens: Int?
+    /// The model's context window in tokens, as the Claude Code mod reported it. Nil when the
+    /// event came from the bash bridge; the view then infers the window from the model name.
+    let contextWindow: Int?
     /// The session's permission mode (`default`, `acceptEdits`, `plan`, `bypassPermissions`),
     /// captured from its hook events. Nil until a hook carrying it has been seen.
     let mode: String?
@@ -115,6 +119,18 @@ final class QueueStore: ObservableObject {
     /// the row can show what mode a session is running under even between events; cleared when
     /// the session ends.
     private var sessionMode: [String: String] = [:]
+
+    /// Per-session model and context fill, as the Claude Code mod reported them on the
+    /// session's latest event (`BridgeExtras`). Preferred over the transcript's figures, which
+    /// lag a scan behind; cleared when the session ends or goes quiet.
+    private var sessionModel: [String: String] = [:]
+    private var sessionContext: [String: (tokens: Int?, window: Int?)] = [:]
+
+    /// Whether the latest Claude Code event came through the mod (true) or the old shell-hook
+    /// bridge (false); nil before any Claude event. Drives the Setup panel's note that a
+    /// pre-1.0 plugin should be updated. Persisted so a relaunch keeps the answer.
+    @Published private(set) var claudeBridgeIsMod: Bool? =
+        UserDefaults.standard.object(forKey: "claudeBridgeIsMod") as? Bool
 
     /// The newest slice of the persisted activity log, mirrored from `historyLog` for the
     /// popover's history view — "what happened while I was away". The full log (with its 7-day
@@ -448,8 +464,9 @@ final class QueueStore: ObservableObject {
                 activity: session.activity,
                 workingSince: turnStart[session.id],
                 trail: session.trail,
-                model: session.model,
-                contextTokens: session.contextTokens,
+                model: sessionModel[session.id] ?? session.model,
+                contextTokens: sessionContext[session.id]?.tokens ?? session.contextTokens,
+                contextWindow: sessionContext[session.id]?.window,
                 mode: sessionMode[session.id],
                 subagentActive: session.subagentActive,
                 backgroundJobs: session.backgroundJobs
@@ -474,8 +491,9 @@ final class QueueStore: ObservableObject {
                 activity: nil,
                 workingSince: turnStart[sessionID],
                 trail: [],
-                model: nil,
-                contextTokens: nil,
+                model: sessionModel[sessionID],
+                contextTokens: sessionContext[sessionID]?.tokens,
+                contextWindow: sessionContext[sessionID]?.window,
                 mode: sessionMode[sessionID],
                 subagentActive: false,
                 backgroundJobs: 0
@@ -549,7 +567,8 @@ final class QueueStore: ObservableObject {
     /// notification row and returns immediately. Attention kinds (question, permission,
     /// elicitation) persist until you dismiss them and drive the badge; informational
     /// kinds auto-expire.
-    func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil, source: AgentSource = .claude) {
+    func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil, source: AgentSource = .claude,
+                extras: BridgeExtras = BridgeExtras()) {
         let parsed = HookPayload(data: payload)
         let agentName = source.shortName
         DebugLog.logEvent("→ \(source.rawValue)/\(event.rawValue)", raw: payload)
@@ -557,6 +576,10 @@ final class QueueStore: ObservableObject {
         // Every event — even ones that raise no row (a muted toggle, an unparsable ask) —
         // proves the plugin reached us, so stamp the health timestamp up front.
         recordHook(from: source)
+        if source == .claude, claudeBridgeIsMod != extras.isMod {
+            claudeBridgeIsMod = extras.isMod
+            UserDefaults.standard.set(extras.isMod, forKey: "claudeBridgeIsMod")
+        }
 
         // Every event from a session counts as "watching" it, until it ends or goes quiet.
         if !parsed.sessionID.isEmpty, event != .sessionEnd {
@@ -568,6 +591,16 @@ final class QueueStore: ObservableObject {
         // line can show it even on events (and quiet stretches) that don't.
         if let mode = parsed.permissionMode, !parsed.sessionID.isEmpty {
             sessionMode[parsed.sessionID] = mode
+        }
+
+        // The mod's live model and context fill, kept per session for the row's meta line.
+        if !parsed.sessionID.isEmpty, event != .sessionEnd {
+            if let model = extras.model {
+                sessionModel[parsed.sessionID] = model
+            }
+            if extras.contextTokens != nil || extras.contextWindow != nil {
+                sessionContext[parsed.sessionID] = (extras.contextTokens, extras.contextWindow)
+            }
         }
 
         // A turn just started — remember when, so the matching `stop` can report duration.
@@ -713,6 +746,8 @@ final class QueueStore: ObservableObject {
             sessionsLastSeen[parsed.sessionID] = nil
             turnStart[parsed.sessionID] = nil
             sessionMode[parsed.sessionID] = nil
+            sessionModel[parsed.sessionID] = nil
+            sessionContext[parsed.sessionID] = nil
             guard settingEnabled("notifySessionEnd") else { return }
             let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The \(source.displayName) session ended."
             enqueueInfo(PendingItem(
@@ -824,6 +859,8 @@ final class QueueStore: ObservableObject {
         sessionsLastSeen = sessionsLastSeen.filter { now.timeIntervalSince($0.value) < sessionTTL }
         turnStart = turnStart.filter { sessionsLastSeen[$0.key] != nil }
         sessionMode = sessionMode.filter { sessionsLastSeen[$0.key] != nil }
+        sessionModel = sessionModel.filter { sessionsLastSeen[$0.key] != nil }
+        sessionContext = sessionContext.filter { sessionsLastSeen[$0.key] != nil }
     }
 
     // MARK: - Dismissal

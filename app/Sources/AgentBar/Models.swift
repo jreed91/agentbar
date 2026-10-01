@@ -392,6 +392,32 @@ struct TerminalHint: Sendable, Hashable {
     }
 }
 
+/// What the Claude Code mod bridge sends on top of the hook input, in `X-AgentBar-*` request
+/// headers: which bridge sent the event, and the session's live model and context-window fill.
+/// The bash bridge (Copilot, or a Claude plugin older than 1.0) sends none of them, so every
+/// field is optional and a missing or malformed header simply leaves it nil.
+struct BridgeExtras: Sendable, Equatable {
+    /// True when the event came from the Claude Code mod (`X-AgentBar-Bridge: mod`).
+    var isMod = false
+    /// The session's main-loop model, as `/model` shows it.
+    var model: String?
+    /// Input tokens the session's last response was answered over.
+    var contextTokens: Int?
+    /// The context window of the session's model, in tokens.
+    var contextWindow: Int?
+
+    /// Parses the raw header values; non-numeric or out-of-range counts are dropped.
+    static func fromHeaders(bridge: String?, model: String?,
+                            contextTokens: String?, contextWindow: String?) -> BridgeExtras {
+        BridgeExtras(
+            isMod: bridge?.lowercased() == "mod",
+            model: model.flatMap { $0.isEmpty ? nil : $0 },
+            contextTokens: contextTokens.flatMap { Int($0) }.flatMap { $0 >= 0 ? $0 : nil },
+            contextWindow: contextWindow.flatMap { Int($0) }.flatMap { $0 > 0 ? $0 : nil }
+        )
+    }
+}
+
 /// A single item in the queue. Nothing here blocks a session: every item is a
 /// notification. Attention kinds (`question`, `permission`, `elicitation`) surface what
 /// Claude is waiting on so you can answer in the terminal and drive the badge count;

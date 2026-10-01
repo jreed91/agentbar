@@ -50,13 +50,33 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: shellcheck
-        run: shellcheck plugin/bin/agentbar-hook scripts/*.sh
+        run: shellcheck bin/agentbar-hook scripts/*.sh
 
       - name: Validate JSON
         run: |
           jq empty plugin/hooks/hooks.json
           jq empty plugin/.claude-plugin/plugin.json
           jq empty .claude-plugin/marketplace.json
+
+  plugin:
+    name: Validate & test Claude Code mod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # Pinned to the release the mod was written and tested against; bump deliberately.
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.287
+
+      - name: Validate plugin
+        run: claude plugin validate plugin
+
+      - name: Test plugin
+        run: claude plugin test plugin
 
   commitlint:
     name: Lint commit messages

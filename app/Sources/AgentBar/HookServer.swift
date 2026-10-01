@@ -185,9 +185,16 @@ final class HookServer {
             termEmulator: header("x-agentbar-termemu"),
             cfBundleID: header("x-agentbar-host")
         )
-        // Which agent sent this event. The Claude plugin omits the header (→ .claude); the
-        // Copilot hook bridge sends "copilot".
+        // Which agent sent this event. The Claude Code mod sends "claude" (a pre-1.0 plugin
+        // omits the header, also → .claude); the Copilot hook bridge sends "copilot".
         let source = AgentSource(header: header("x-agentbar-agent"))
+        // The Claude Code mod's extras; all nil from the bash bridge.
+        let extras = BridgeExtras.fromHeaders(
+            bridge: header("x-agentbar-bridge"),
+            model: header("x-agentbar-model"),
+            contextTokens: header("x-agentbar-context-tokens"),
+            contextWindow: header("x-agentbar-context-window")
+        )
 
         switch (request.method, request.path) {
         case ("GET", "/v1/health"):
@@ -197,27 +204,27 @@ final class HookServer {
             let body = "{\"ok\":true,\"pid\":\(pid),\"version\":\"\(Self.appVersion)\"}"
             respond(connection, status: 200, body: body, contentType: "application/json")
         case ("POST", "/v1/ask"):
-            dispatch(.ask, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.ask, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/permission"):
-            dispatch(.permission, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.permission, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/elicit"):
-            dispatch(.elicit, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.elicit, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/working"):
-            dispatch(.working, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.working, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/resolved"):
-            dispatch(.resolved, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.resolved, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/denied"):
-            dispatch(.denied, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.denied, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/notify"):
-            dispatch(.notify, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.notify, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/stop"):
-            dispatch(.stop, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.stop, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/subagent"):
-            dispatch(.subagentStop, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.subagentStop, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/sessionend"):
-            dispatch(.sessionEnd, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.sessionEnd, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/stopfailure"):
-            dispatch(.stopFailure, body: request.body, hint: hint, source: source, connection: connection)
+            dispatch(.stopFailure, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         default:
             respond(connection, status: 404, body: "not found")
         }
@@ -233,14 +240,15 @@ final class HookServer {
         return expected == actual
     }
 
-    private func dispatch(_ event: HookEvent, body: Data, hint: TerminalHint, source: AgentSource, connection: NWConnection) {
+    private func dispatch(_ event: HookEvent, body: Data, hint: TerminalHint, source: AgentSource,
+                          extras: BridgeExtras, connection: NWConnection) {
         // Acknowledge immediately so the session never blocks, then enqueue the
         // notification on the main actor. AgentBar is notify-only: there is no response
         // to carry back, so the hook always sees an empty body (204) = terminal passthrough.
         respond(connection, status: 204, body: "")
         let terminal = hint.isEmpty ? nil : hint
         Task { @MainActor in
-            AppState.shared.queue.submit(event: event, payload: body, terminal: terminal, source: source)
+            AppState.shared.queue.submit(event: event, payload: body, terminal: terminal, source: source, extras: extras)
         }
     }
 

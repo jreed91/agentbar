@@ -231,4 +231,27 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(DurationFormat.short(3600), "1h 00m")
         XCTAssertEqual(DurationFormat.short(3660), "1h 01m")
     }
+
+    // MARK: - BridgeExtras
+
+    func testBridgeExtrasReadsTheModHeaders() {
+        let extras = BridgeExtras.fromHeaders(bridge: "mod", model: "claude-opus-5-5[1m]",
+                                              contextTokens: "123456", contextWindow: "1000000")
+        XCTAssertEqual(extras, BridgeExtras(isMod: true, model: "claude-opus-5-5[1m]",
+                                            contextTokens: 123_456, contextWindow: 1_000_000))
+    }
+
+    func testBridgeExtrasFromTheBashBridgeIsEmpty() {
+        let extras = BridgeExtras.fromHeaders(bridge: nil, model: nil, contextTokens: nil, contextWindow: nil)
+        XCTAssertEqual(extras, BridgeExtras())
+        XCTAssertFalse(extras.isMod)
+    }
+
+    func testBridgeExtrasDropsMalformedCounts() {
+        let extras = BridgeExtras.fromHeaders(bridge: "MOD", model: "", contextTokens: "lots", contextWindow: "0")
+        XCTAssertTrue(extras.isMod)
+        XCTAssertNil(extras.model)
+        XCTAssertNil(extras.contextTokens)
+        XCTAssertNil(extras.contextWindow, "a zero window would divide by zero in the gauge")
+    }
 }

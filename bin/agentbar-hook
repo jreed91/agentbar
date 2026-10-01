@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #
-# agentbar-hook — bridge between Claude Code hooks and the AgentBar menu bar app.
+# agentbar-hook — bridge between command hooks and the AgentBar menu bar app.
+#
+# GitHub Copilot CLI's hooks call this script (bundled in AgentBar.app/Contents/Resources).
+# Claude Code no longer does: the Claude plugin is a Claude Code mod
+# (plugin/hooks/agentbar.ts) that posts the same events to the same server itself.
+# The script also stays as `--selftest`, the pipeline diagnosis `make doctor` runs.
 #
 # Usage: agentbar-hook <event> [agent]
 #        agentbar-hook --selftest
 #   events: working | ask | permission | elicit | resolved | denied | notify | stop | subagent | sessionend | stopfailure
-#   agent:  claude (default) | copilot  — which coding agent fired the event. The Claude
-#           Code plugin omits it; the Copilot CLI hook config passes "copilot". It is sent
+#   agent:  claude (default) | copilot  — which coding agent fired the event. The Copilot
+#           CLI hook config passes "copilot". It is sent
 #           to AgentBar in the X-AgentBar-Agent header so the app can tag and route the row.
 #
 # AgentBar is notify-only: every event is fire-and-forget. This script reads the
