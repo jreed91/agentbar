@@ -114,10 +114,19 @@ In Claude Code:
 
 The mod loads automatically on install — no `settings.json` editing needed.
 
-**Upgrading from plugin 0.x:** 0.x fed AgentBar through shell command hooks; 1.0 replaces
-them with the mod. Run `claude update`, then `/plugin marketplace update agentbar` and
-`/reload-plugins` in Claude Code. Settings → Setup shows **Connected via mod** once it's live,
-and tells you if events are still arriving the old way.
+**Updating:** Claude Code caches the plugin by version and refreshing the marketplace alone
+does not move an installed copy. Run:
+
+```
+claude update
+claude plugin marketplace update agentbar
+claude plugin update agentbar@agentbar
+```
+
+then restart your Claude Code sessions. `claude plugin list` should show the version in
+`plugin/.claude-plugin/plugin.json`. Plugin 0.x fed AgentBar through shell command hooks;
+1.0 and later replace them with the mod. Settings → Setup shows **Connected via mod** once
+it's live, and tells you if events are still arriving the old way.
 
 ### 3. GitHub Copilot CLI (optional)
 
