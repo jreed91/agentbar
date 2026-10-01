@@ -320,7 +320,7 @@ describe('the band above the prompt', () => {
     $.session.start({ cwd: '/work/project', surface: isInteractive ? 'terminal' : null, isInteractive })
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    test(`on ${surface}, it names the other sessions waiting, never this one, and Jump focuses the first`, async ($, on) => {
+    test(`on ${surface}, it gives each other session waiting a row, never this one, and Jump focuses that row's`, async ($, on) => {
       const app = machine(on, 41101, {
         running: true,
         launches: false,
@@ -329,26 +329,67 @@ describe('the band above the prompt', () => {
           sessions: [
             waitingOn('session-2', '/work/api', 'permission'),
             waitingOn('session-1', '/work/project', 'question'),
-            waitingOn('session-3', '/work/web', 'question'),
+            { ...waitingOn('session-3', '/work/web', 'question'), summary: 'Which database?' },
           ],
           jump_shortcut: '⌥⇧A',
         },
       }, { clock: false })
-      mock.clock(on)
+      mock.clock(on, { now: (1_700_000_000 + 5 * 60) * 1000 })
       await startSession($)
 
       const ui = await $.ui.mount({ plugin: 'agentbar', surface, component: 'AbovePrompt', props: BAND })
       const drawn = JSON.stringify(await ui.drawn())
-      expect(drawn).toContain('2 other sessions need you')
-      expect(drawn).toContain('api (permission), web (question)')
-      expect(drawn).not.toContain('project (question)')
-      expect(drawn).toContain('⌥⇧A from anywhere')
+      expect(drawn).toContain('needs permission')
+      expect(drawn).toContain(' · Wants to run Bash')
+      expect(drawn).toContain('has a question')
+      expect(drawn).toContain(' · Which database?')
+      expect(drawn).toContain('"5m"')
+      expect(drawn).toContain('api')
+      expect(drawn).toContain('web')
+      expect(drawn).not.toContain('project')
+      expect(drawn).toContain('or ⌥⇧A')
 
-      await ui.press({ key: 'jump' })
+      await ui.press({ key: 'jump-session-3' })
       const focus = app.posts.find(p => p.url.endsWith('/v1/focus'))
-      expect(focus?.body).toEqual({ session_id: 'session-2' })
+      expect(focus?.body).toEqual({ session_id: 'session-3' })
     })
   }
+
+  test('it shows three rows and folds the rest', async ($, on) => {
+    machine(on, 41106, {
+      running: true,
+      launches: false,
+      published: true,
+      attention: {
+        sessions: ['a', 'b', 'c', 'd', 'e'].map(name => waitingOn(`s-${name}`, `/work/${name}`, 'question')),
+        jump_shortcut: null,
+      },
+    }, { clock: false })
+    mock.clock(on)
+    await startSession($)
+
+    const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await ui.find({ key: 'jump-s-c' })).toBeDefined()
+    expect(await ui.find({ key: 'jump-s-d' })).toBeUndefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('+2 more waiting in AgentBar')
+  })
+
+  test('the waiting time keeps up without a redraw every poll', async ($, on) => {
+    machine(on, 41107, {
+      running: true,
+      launches: false,
+      published: true,
+      attention: { sessions: [waitingOn('session-2', '/work/api', 'permission')], jump_shortcut: null },
+    }, { clock: false })
+    const clock = mock.clock(on, { now: (1_700_000_000 + 30) * 1000 })
+    await startSession($)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(JSON.stringify(await ui.drawn())).toContain('"now"')
+    await clock.advance(2 * 60 * 1000)
+    expect(JSON.stringify(await ui.drawn())).toContain('"2m"')
+  })
 
   test('it follows AgentBar as sessions start and stop waiting', async ($, on) => {
     const world: World = { running: true, launches: false, published: true }
@@ -358,19 +399,19 @@ describe('the band above the prompt', () => {
     await clock.settle()
 
     const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
-    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+    expect(await ui.find({ text: /needs permission/ })).toBeUndefined()
 
     world.attention = { sessions: [waitingOn('session-2', '/work/api', 'permission')], jump_shortcut: null }
     await clock.advance(2000)
-    expect(JSON.stringify(await ui.drawn())).toContain('1 other session needs you')
+    expect(JSON.stringify(await ui.drawn())).toContain('needs permission')
 
     world.attention = { sessions: [], jump_shortcut: null }
     await clock.advance(2000)
-    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+    expect(await ui.find({ text: /needs permission/ })).toBeUndefined()
   })
 
-  test('a narrow terminal keeps the count and drops the list', async ($, on) => {
-    machine(on, 41103, {
+  test('a narrow terminal keeps the ask and drops the summary and the hotkey', async ($, on) => {
+    const app = machine(on, 41103, {
       running: true,
       launches: false,
       published: true,
@@ -386,9 +427,12 @@ describe('the band above the prompt', () => {
       props: { ...BAND, bodyColumns: 50 },
     })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('1 other session needs you')
-    expect(drawn).not.toContain('api (permission)')
-    expect(drawn).not.toContain('from anywhere')
+    expect(drawn).toContain('needs permission')
+    expect(drawn).not.toContain('Wants to run Bash')
+    expect(drawn).not.toContain('⌥⇧A')
+
+    await ui.press({ key: 'jump-session-2' })
+    expect(app.posts.find(p => p.url.endsWith('/v1/focus'))?.body).toEqual({ session_id: 'session-2' })
   })
 
   test('a poll never launches AgentBar, and with the app down the band stays hidden', async ($, on) => {
@@ -398,7 +442,7 @@ describe('the band above the prompt', () => {
     await clock.advance(10_000)
 
     const ui = await $.ui.mount({ plugin: 'agentbar', surface: 'terminal', component: 'AbovePrompt', props: BAND })
-    expect(await ui.find({ text: /need you/ })).toBeUndefined()
+    expect(await ui.find({ text: /needs permission|has a question/ })).toBeUndefined()
     expect(app.opened).toEqual([])
   })
 

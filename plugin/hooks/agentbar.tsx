@@ -19,13 +19,14 @@
 // adds a few headers the app reads when present: the bridge kind, the session's model, and
 // its live context-window fill.
 //
-// The same module draws AgentBar inside the terminal: a one-line band above the prompt
-// naming the *other* sessions waiting on you, so you need not glance at the menu bar. It
-// polls `GET /v1/attention` while the session is interactive and draws nothing when no other
-// session waits, AgentBar is not running, or a survey holds the band. The band only notifies:
-// "Jump" (or `j` with the band focused, ctrl+x tab) asks AgentBar to bring that session's
-// terminal forward, and you answer there. A poll never launches AgentBar; only an event the
-// bridge must deliver does.
+// The same module draws AgentBar inside the terminal: a band above the prompt with a row for
+// each *other* session waiting on you (project, what it asks, how long it has waited), so
+// you need not glance at the menu bar. It polls `GET /v1/attention` while the session is
+// interactive and draws nothing when no other session waits, AgentBar is not running, or a
+// survey holds the band. The band only notifies: a row's "Jump" (or `j` for the first, with
+// the band focused: ctrl+x tab) asks AgentBar to bring that session's terminal forward, and
+// you answer there. A poll never launches AgentBar; only an event the bridge must deliver
+// does.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as $, Register } from 'claude-code'
@@ -38,11 +39,18 @@ const SERVER_FILE = 'Library/Application Support/AgentBar/server.json'
 /** How often the band asks AgentBar who is waiting. */
 const POLL_MS = 2000
 
-/** Below this many columns the band drops the per-session list and keeps the count. */
+/** Below this many columns a row drops the prompt's summary. */
 const NARROW_COLUMNS = 72
+/** From this many columns the first row also names AgentBar's global hotkey. */
+const WIDE_COLUMNS = 100
+/** Rows the band shows before folding the rest into "+N more". */
+const MAX_ROWS = 3
+/** The widest a project name gets before it is cut. */
+const MAX_NAME = 20
 
 const waiting = atom({ plugin: 'agentbar', key: 'waiting' } as const, [])
 const jumpShortcut = atom({ plugin: 'agentbar', key: 'jumpShortcut' } as const, null)
+const clockSeconds = atom({ plugin: 'agentbar', key: 'now' } as const, 0)
 
 // Classic (settings-hook) events → AgentBar endpoints. `classic.<Event>` hooks receive the
 // same input the old command hooks read on stdin, so the bodies are byte-for-byte what the
@@ -146,25 +154,49 @@ export const register: Register = on => {
     if (e.props.hasSurvey || others.length === 0) return next(e)
 
     const shortcut = await read($, jumpShortcut)
+    const now = await read($, clockSeconds)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const [first] = others
-    const narrow = e.props.bodyColumns < NARROW_COLUMNS
+    const columns = e.props.bodyColumns
+    const rows = others.slice(0, MAX_ROWS)
+    const hidden = others.length - rows.length
+    // One column for the project names, so the asks line up under each other.
+    const nameWidth = Math.min(MAX_NAME, Math.max(...rows.map(entry => project(entry.cwd).length)))
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Text color="yellow">●</Text>
-        <Text wrap="truncate-end">
-          <Text bold>{headline(others.length)}</Text>
-          {narrow ? '' : `: ${others.map(label).join(', ')}`}
-        </Text>
-        <Button
-          key="jump"
-          hotkey="j"
-          plain
-          label={narrow ? 'Jump' : `Jump to ${project(first!.cwd)}`}
-          onPress={() => void jump($, first!.session_id)}
-        />
-        {shortcut && !narrow ? <Text dimColor>{`· ${shortcut} from anywhere`}</Text> : null}
+      <Box flexDirection="column">
+        {rows.map((entry, index) => {
+          const waited = now ? ago(now - entry.waiting_since) : ''
+          return (
+            <Box key={entry.session_id} flexDirection="row" gap={1}>
+              <Text color={tone(entry.status)}>●</Text>
+              <Box width={nameWidth} flexShrink={0}>
+                <Text bold wrap="truncate-end">
+                  {project(entry.cwd)}
+                </Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text wrap="truncate-end">
+                  {ask(entry.status)}
+                  {columns >= NARROW_COLUMNS && entry.summary ? (
+                    <Text dimColor>{` · ${entry.summary}`}</Text>
+                  ) : null}
+                </Text>
+              </Box>
+              {waited ? <Text dimColor>{waited}</Text> : null}
+              <Button
+                key={`jump-${entry.session_id}`}
+                {...(index === 0 ? { hotkey: 'j' } : {})}
+                plain
+                label="Jump"
+                onPress={() => void jump($, entry.session_id)}
+              />
+              {index === 0 && shortcut && columns >= WIDE_COLUMNS ? (
+                <Text dimColor>{`or ${shortcut}`}</Text>
+              ) : null}
+            </Box>
+          )
+        })}
+        {hidden > 0 ? <Text dimColor>{`  +${hidden} more waiting in AgentBar`}</Text> : null}
       </Box>
     )
   })
@@ -172,13 +204,24 @@ export const register: Register = on => {
 
 type Attention = { sessions?: AgentBarWaiting[]; jump_shortcut?: string | null }
 
-function headline(count: number): string {
-  return count === 1 ? '1 other session needs you' : `${count} other sessions need you`
+/** What the session waits on, as the row reads it. */
+function ask(status: string): string {
+  if (status === 'permission') return 'needs permission'
+  if (status === 'question') return 'has a question'
+  return 'needs you'
 }
 
-/** `api (permission)`: the project, and what it waits on. */
-function label(entry: AgentBarWaiting): string {
-  return `${project(entry.cwd)} (${entry.status})`
+/** Permission prompts in yellow, as the menu bar draws them; questions in cyan. */
+function tone(status: string): string {
+  return status === 'permission' ? 'yellow' : 'cyan'
+}
+
+/** How long a session has waited, coarse on purpose: `now`, `4m`, `2h`. */
+function ago(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  if (seconds < 60) return 'now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  return `${Math.floor(seconds / 3600)}h`
 }
 
 function project(cwd: string): string {
@@ -202,6 +245,17 @@ async function poll($: $): Promise<void> {
   if (shortcut !== (await read($, jumpShortcut))) {
     await update($, jumpShortcut, () => shortcut)
   }
+  // The clock the waiting times are read against, written only when a time the band
+  // shows would change, so the band redraws about once a minute rather than every poll.
+  const now = await safe(async () => Math.floor((await $.clock.now()) / 1000))
+  const shown = await read($, clockSeconds)
+  if (now !== undefined && ages(others, now) !== ages(others, shown)) {
+    await update($, clockSeconds, () => now)
+  }
+}
+
+function ages(entries: AgentBarWaiting[], now: number): string {
+  return entries.map(entry => (now ? ago(now - entry.waiting_since) : '')).join(',')
 }
 
 async function fetchAttention($: $): Promise<Attention | undefined> {
