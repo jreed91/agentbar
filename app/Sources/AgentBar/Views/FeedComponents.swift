@@ -137,9 +137,9 @@ struct SourceTag: View {
 
 // MARK: - Keycap button
 
-/// A `[key] label` action styled like a terminal keycap. AgentBar is notify-only, so these
-/// never resolve a prompt — they bring your terminal forward (focus) or clear the row
-/// (dismiss). The design's `y allow / n deny` become honest focus/dismiss actions.
+/// A `[key] label` action styled like a terminal keycap: focus, dismiss and mute, plus the
+/// design's `y allow / n deny` and a question's options when a prompt can be answered from
+/// the menu bar.
 struct KeycapButton: View {
     enum Style { case primary, deny, focus }
 

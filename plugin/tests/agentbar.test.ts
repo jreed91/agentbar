@@ -14,6 +14,16 @@ type World = {
   launches: boolean
   /** Whether server.json exists. */
   published: boolean
+  /** Whether "Answer prompts from the menu bar" is on in the app. */
+  answering?: boolean
+  /**
+   * What the app answers a poll with once `answerAfter` polls have gone by: an answer body
+   * (200), `'gone'` (410: answered in the terminal or cleared), or nothing yet (204).
+   */
+  answer?: Record<string, unknown> | 'gone'
+  answerAfter?: number
+  /** What the settings hooks beneath answer a permission request with. */
+  settingsDecision?: Record<string, unknown>
   /** What `GET /v1/attention` answers: the sessions waiting on you, and the jump hotkey. */
   attention?: { sessions: Waiting[]; jump_shortcut: string | null }
 }
@@ -28,6 +38,8 @@ type Waiting = { session_id: string; cwd: string; status: string; summary: strin
 function machine(on: On, port: number, world: World, { clock = true }: { clock?: boolean } = {}) {
   const posts: Post[] = []
   const opened: string[][] = []
+  const answerPolls: string[] = []
+  const withdrawn: string[] = []
   let polls = 0
   let arrived: (() => void) | undefined
   const waitForPost = () =>
@@ -48,6 +60,20 @@ function machine(on: On, port: number, world: World, { clock = true }: { clock?:
     if (!world.running || !ours) return { deny: 'ECONNREFUSED' }
     if (!authorized) return { value: { status: 401, ok: false, headers: {}, text: 'unauthorized' } }
     if (e.url.endsWith('/v1/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
+    const answerPath = e.url.match(/\/v1\/answer\/([0-9a-f]+)/)
+    if (answerPath) {
+      const id = answerPath[1] ?? ''
+      if (e.init?.method === 'DELETE') {
+        withdrawn.push(id)
+        return { value: { status: 204, ok: true, headers: {}, text: '' } }
+      }
+      answerPolls.push(id)
+      if (answerPolls.length <= (world.answerAfter ?? 0) || world.answer === undefined) {
+        return { value: { status: 204, ok: true, headers: {}, text: '' } }
+      }
+      if (world.answer === 'gone') return { value: { status: 410, ok: false, headers: {}, text: '' } }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(world.answer) } }
+    }
     if (e.url.endsWith('/v1/attention')) {
       polls += 1
       const text = JSON.stringify(world.attention ?? { sessions: [], jump_shortcut: null })
@@ -55,6 +81,10 @@ function machine(on: On, port: number, world: World, { clock = true }: { clock?:
     }
     posts.push({ url: e.url, init: e.init, body: JSON.parse(e.init?.body ?? '{}') })
     arrived?.()
+    if (e.init?.headers?.['X-AgentBar-Answer-Id']) {
+      const text = JSON.stringify({ answerable: world.answering === true })
+      return { value: { status: 200, ok: true, headers: {}, text } }
+    }
     return { value: { status: 204, ok: true, headers: {}, text: '' } }
   })
   on('process.run', async ($, e) => {
@@ -69,21 +99,26 @@ function machine(on: On, port: number, world: World, { clock = true }: { clock?:
   on('session.cwd', async () => ({ value: '/work/project' }))
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   // The launch wait polls with sleeps; answer them at once (unless the test keeps a clock).
-  if (clock) on('clock.sleep', async () => ({ value: undefined }))
+  if (clock) {
+    on('clock.sleep', async () => ({ value: undefined }))
+    on('clock.now', async () => ({ value: 1_000 }))
+  }
   on('session.usage', async () => ({
     value: { startedAt: 0, context: { tokens: 123_456, window: 1_000_000, percent: 12 }, rateLimits: [] },
   }))
 
   // Nothing beneath the plugins answers a classic event in a test; these stand in for the
   // engine's own (no settings hooks configured).
-  on('classic.PermissionRequest', async () => ({}))
+  on('classic.PermissionRequest', async () =>
+    world.settingsDecision ? ({ decision: world.settingsDecision } as never) : {},
+  )
   on('classic.Notification', async () => ({}))
 
   // The engine's own session start and band (an empty one), beneath the mod's.
   on('session.start', async ($, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'Box', props: {}, children: [] }) as never)
 
-  return { posts, opened, waitForPost, polls: () => polls }
+  return { posts, opened, waitForPost, polls: () => polls, answerPolls, withdrawn }
 }
 
 describe('forwarding', () => {
@@ -174,6 +209,94 @@ describe('launching and failing open', () => {
     expect(reachedBottom).toBe(true)
     expect(result).toEqual({})
     expect(app.posts).toEqual([])
+  })
+})
+
+describe('answering from the menu bar', () => {
+  const bash = { tool_name: 'Bash', tool_input: { command: 'npm publish' } } as never
+
+  test('an allow picked in the menu bar answers the permission request', async ($, on) => {
+    const app = machine(on, 41101, { running: true, launches: false, published: true, answering: true, answer: { behavior: 'allow' }, answerAfter: 2 })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result.decision).toEqual({ behavior: 'allow' })
+    expect(app.posts[0]?.init?.headers?.['X-AgentBar-Answer-Id']).toMatch(/^[0-9a-f]{24}$/)
+    expect(app.answerPolls.length).toBe(3)
+    expect(app.withdrawn).toEqual([])
+  })
+
+  test('a deny picked in the menu bar refuses the request with its message', async ($, on) => {
+    machine(on, 41102, { running: true, launches: false, published: true, answering: true, answer: { behavior: 'deny' } })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result.decision).toEqual({ behavior: 'deny', message: 'Denied from the AgentBar menu bar.' })
+  })
+
+  test('with answering turned off, the request is only forwarded and the terminal decides', async ($, on) => {
+    const app = machine(on, 41103, { running: true, launches: false, published: true, answering: false, answer: { behavior: 'allow' } })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result).toEqual({})
+    expect(app.posts.map(p => p.url)).toEqual(['http://127.0.0.1:41103/v1/permission'])
+    expect(app.answerPolls).toEqual([])
+  })
+
+  test('a prompt answered in the terminal first leaves the decision to the terminal', async ($, on) => {
+    const app = machine(on, 41104, { running: true, launches: false, published: true, answering: true, answer: 'gone', answerAfter: 1 })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result).toEqual({})
+    expect(app.answerPolls.length).toBe(2)
+    expect(app.withdrawn).toEqual([])
+  })
+
+  test('a settings hook that already decided is not offered to the menu bar', async ($, on) => {
+    const app = machine(on, 41105, {
+      running: true, launches: false, published: true, answering: true, answer: { behavior: 'deny' },
+      settingsDecision: { behavior: 'allow' },
+    })
+
+    const result = await $.classic.PermissionRequest(bash)
+    await app.waitForPost()
+
+    expect(result.decision).toEqual({ behavior: 'allow' })
+    expect(app.answerPolls).toEqual([])
+  })
+
+  const questions = [
+    { question: 'Which database?', header: 'DB', options: [{ label: 'Postgres', description: '' }, { label: 'SQLite', description: '' }], multiSelect: false },
+  ]
+
+  test('an option picked in the menu bar answers AskUserQuestion and closes the terminal dialog', async ($, on) => {
+    machine(on, 41106, { running: true, launches: false, published: true, answering: true, answer: { answers: { 'Which database?': 'SQLite' } } })
+    let terminalClosed = false
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+      // The terminal dialog: open until someone answers or the call is taken away.
+      await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+      terminalClosed = true
+      return { result: { questions, answers: {} } } as never
+    })
+
+    const result = await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(result).toEqual(expect.objectContaining({ result: { questions, answers: { 'Which database?': 'SQLite' } } }))
+    expect(terminalClosed).toBe(true)
+  })
+
+  test('an AskUserQuestion answered in the terminal first keeps the terminal answer', async ($, on) => {
+    const app = machine(on, 41107, { running: true, launches: false, published: true, answering: true })
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+      await app.waitForPost()
+      return { result: { questions, answers: { 'Which database?': 'Postgres' } } } as never
+    })
+
+    const result = await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(result).toEqual(expect.objectContaining({ result: { questions, answers: { 'Which database?': 'Postgres' } } }))
   })
 })
 

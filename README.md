@@ -4,8 +4,12 @@ A native macOS menu bar app that watches your terminal coding agents — **Claud
 **GitHub Copilot CLI** — through a zero-config Claude Code mod (Claude) and a one-command hook
 install (Copilot). When an agent needs something from you — a multiple-choice question, a permission
 prompt, or it has gone idle waiting for input — AgentBar notifies you and brings your terminal
-back to the front so you can answer there. It is a **notification tool, not an input tool**: it
-never blocks your session and never sits between you and the agent.
+back to the front so you can answer there. Out of the box it only notifies: it never blocks
+your session and never answers for you. If you turn on **Answer prompts from the menu bar**
+(off by default), it can also allow or deny a Claude Code permission request, or answer a
+Claude Code question, from the popover or the banner. The prompt still opens in your
+terminal at the same time, and whichever you answer first wins (see
+[Answering from the menu bar](#answering-from-the-menu-bar)).
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="AgentBar popover showing a multi-agent dashboard: a permission and a question waiting, one session working, two idle — each Claude row tagged with its model, permission mode, and context usage, plus a Copilot session" width="380">
@@ -37,9 +41,11 @@ Claude Code session → AgentBar mod → AgentBar local server → menu bar / ba
    model and context-window fill. It launches the app first if it is not already running
    (in the terminal; the desktop Code tab can't start programs, so there the event is
    skipped until the app is open).
-3. The mod only observes: it passes every event on unchanged and sends in the background,
-   so your session is never blocked. AgentBar queues the item, badges the menu bar icon, and
-   posts a notification showing what Claude is asking.
+3. The mod passes every event on unchanged and sends in the background, so your session is
+   never blocked. (With answering turned on, a permission request or question also waits
+   for an answer from the menu bar while the terminal prompt is open; see below.) AgentBar
+   queues the item, badges the menu bar icon, and posts a notification showing what Claude
+   is asking.
 4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus"
    button in the popover) brings the session's own terminal/IDE window back to the front.
    Once you answer — allow or deny — AgentBar notices the session move past the prompt
@@ -54,8 +60,32 @@ Claude Code session → AgentBar mod → AgentBar local server → menu bar / ba
 
 **Fail-open contract:** the mod never holds up your session. If the app is missing,
 unreachable, or errors in any way, the event is silently dropped — exactly as if AgentBar
-were never installed. Because AgentBar never returns a decision to Claude Code, every prompt
-is always answered in the terminal.
+were never installed, and the prompt is answered in the terminal. With answering turned off
+(the default), AgentBar never returns a decision to Claude Code.
+
+### Answering from the menu bar
+
+Turn on **Settings → Answering → Answer prompts from the menu bar** to answer Claude Code
+prompts without switching windows:
+
+- A **permission request** row gets **y allow** and **n deny** keycaps (and the `y` / `n`
+  keys on the selected row), and its banner gets **Allow** (asks you to unlock the Mac first)
+  and **Deny** buttons.
+- A **question** (`AskUserQuestion`) row shows its options as keycaps. One single-choice
+  question sends on the first click; several questions or a multi-select question send with
+  **send answers**. A question with a free-text or number answer stays terminal-only.
+
+How it behaves:
+
+- **The terminal prompt still opens.** Claude Code shows its dialog as usual while the mod
+  waits for the menu bar, so answering in the terminal works exactly as before.
+- **First answer wins.** Answer in the menu bar and the terminal dialog closes; answer in
+  the terminal and the menu-bar buttons go away with the row.
+- **Fail-open.** If AgentBar isn't running when the prompt appears, the prompt is
+  terminal-only (the mod launches the app for next time). If the app quits mid-wait, the
+  terminal prompt is still there.
+- **Claude Code only.** It needs the Claude Code mod; Copilot prompts, MCP input requests and
+  every prompt with the setting off are answered in the terminal.
 
 ## Install
 
@@ -122,13 +152,13 @@ Every event is a notification — AgentBar never intercepts or answers a prompt 
   <img src="docs/images/permission.png" alt="A session row waiting on a permission request, showing the tool, the shell command in an amber box, the session's model / mode / context meta line, a live waiting timer, an expanded activity trail, and focus / dismiss / mute keycaps" width="360">
 </p>
 
-<p align="center"><sub><i>A permission request surfaced for context — the tool, its command, and how long it's been waiting. The keycaps <b>focus</b> your terminal or <b>dismiss</b> the row; you still allow or deny in the terminal.</i></sub></p>
+<p align="center"><sub><i>A permission request surfaced for context — the tool, its command, and how long it's been waiting. The keycaps <b>focus</b> your terminal or <b>dismiss</b> the row; with answering turned on, <b>allow</b> and <b>deny</b> keycaps join them.</i></sub></p>
 
 | Event | What you see | What you do |
 |---|---|---|
 | **Thinking** (`UserPromptSubmit`) | A live "working" status while Claude is on a turn (no banner) | Nothing — it clears itself when the turn ends |
-| **Question** (`AskUserQuestion`) | The question and its options, for context | Answer in the terminal; click to focus it |
-| **Permission request** | The tool and its input, so you know what Claude wants | Allow/deny in the terminal; click to focus it |
+| **Question** (`AskUserQuestion`) | The question and its options | Answer in the terminal, or pick an option in the popover with answering on |
+| **Permission request** | The tool and its input, so you know what Claude wants | Allow/deny in the terminal, or from the popover or banner with answering on |
 | **MCP input request** (`Elicitation`) | The server's message and the fields it wants | Fill it in the terminal; click to focus it |
 | **Idle / waiting** | Claude is waiting for input | Click to focus the terminal |
 | **Task finished** (`Stop`) | The turn completed | Click to focus the terminal |
@@ -137,8 +167,8 @@ Every event is a notification — AgentBar never intercepts or answers a prompt 
 | **Run interrupted** (`StopFailure`) | Surfaces API errors such as rate limits, overload, or billing problems | — |
 
 Questions, permissions, and MCP input requests badge the icon and stay in the popover
-until they're resolved. There is no reply channel back into the session, so AgentBar can't
-clear them the instant you answer — instead it watches for the session to make progress and
+until they're resolved. When you answer in the terminal, AgentBar can't see that instantly,
+so it watches for the session to make progress and
 clears them then, which in practice is a beat after you respond in the terminal. That
 progress can be the next tool run, the turn finishing, the *next* prompt appearing, or a new
 turn starting — a session can only get that far once you've answered whatever it was blocked
@@ -149,13 +179,14 @@ individually.
 
 ### Banner actions, mute & Do Not Disturb
 
-Banners carry inline buttons — but AgentBar stays notify-only, so none of them answer a
-prompt for you:
+Banners carry inline buttons. Unless answering is turned on, none of them answer a prompt
+for you:
 
 - **Dismiss** clears the row (and its banner).
 - **Snooze 10 min** hushes an attention item and re-posts it later if it is still waiting.
 - **Copy command** (on permission banners that carry a shell command) puts the command on
   the clipboard so you can paste it in the terminal.
+- **Allow** / **Deny** (permission banners, with answering turned on) answer the request.
 
 For sessions that are noisy, click **mute** on the session's row in the popover — its events
 still show in the feed and still badge the icon, but post no banner and play no sound. A
@@ -220,17 +251,17 @@ and the height is remembered across launches.
 The list is fully keyboard-drivable while the popover is open. **↑/↓** (or **j/k**) walk the
 rows in reading order — needs-you first — highlighting the selected one and scrolling it into
 view. The selected row's actions are one keystroke away, mirroring its keycaps: **↵** focuses
-its terminal, **d** dismisses a live prompt, **m** mutes/unmutes the project, and **→** (or
+its terminal, **d** dismisses a live prompt, **y** / **n** allow or deny a permission request
+(with answering turned on), **m** mutes/unmutes the project, and **→** (or
 **t**) expands its activity trail. **Esc** clears the selection. A click on a row selects it
 too, so mouse and keyboard stay in sync.
 
 ### Multi-agent dashboard
 
 For running several Claude Code sessions at once, the session list doubles as a read-only
-dashboard — a legible overview of your parallel agents. It stays true to the notify-only
-contract: everything here is *awareness*, derived from the same hooks and transcripts
-AgentBar already reads. There is no reply channel, no control, nothing that answers a prompt
-or steers an agent.
+dashboard — a legible overview of your parallel agents. Everything here is *awareness*,
+derived from the same hooks and transcripts AgentBar already reads. Apart from the opt-in
+prompt answering above, nothing here answers a prompt or steers an agent.
 
 - **Summary strip.** A pinned header counts your sessions by state: `● need you`,
   `⚙ working`, `○ idle`.

@@ -49,11 +49,11 @@ enum AgentSource: String, Sendable {
 /// The hook events AgentBar handles, matching the plugin's `agentbar-hook <event>`
 /// argument and the server routes `/v1/<event>`. The raw value is the route/token.
 ///
-/// Every event is notify-only: the hook POSTs the payload and the server returns
-/// immediately, so the Claude Code session never blocks on AgentBar. Questions,
-/// permissions, and MCP input requests are surfaced with their full context so you
-/// know what's being asked, but you answer in the terminal — AgentBar just brings
-/// you back to it.
+/// Every event is acknowledged at once, so the session never blocks on AgentBar. Questions,
+/// permissions, and MCP input requests are surfaced with their full context so you know
+/// what's being asked. You answer in the terminal, or, with "Answer prompts from the menu
+/// bar" turned on, a Claude Code permission request or question from the popover or banner
+/// (see `MenuBarAnswer`).
 enum HookEvent: String {
     // Attention events — Claude is waiting on you in the terminal.
     case ask
@@ -405,23 +405,54 @@ struct BridgeExtras: Sendable, Equatable {
     var contextTokens: Int?
     /// The context window of the session's model, in tokens.
     var contextWindow: Int?
+    /// Set when the mod is waiting for an answer to this prompt (`X-AgentBar-Answer-Id`): the
+    /// id it polls `/v1/answer/<id>` with. Nil on every other event.
+    var answerID: String?
 
-    /// Parses the raw header values; non-numeric or out-of-range counts are dropped.
+    /// Parses the raw header values; non-numeric or out-of-range counts are dropped, and an
+    /// answer id that isn't 8–64 hex digits is ignored.
     static func fromHeaders(bridge: String?, model: String?,
-                            contextTokens: String?, contextWindow: String?) -> BridgeExtras {
+                            contextTokens: String?, contextWindow: String?,
+                            answerID: String? = nil) -> BridgeExtras {
         BridgeExtras(
             isMod: bridge?.lowercased() == "mod",
             model: model.flatMap { $0.isEmpty ? nil : $0 },
             contextTokens: contextTokens.flatMap { Int($0) }.flatMap { $0 >= 0 ? $0 : nil },
-            contextWindow: contextWindow.flatMap { Int($0) }.flatMap { $0 > 0 ? $0 : nil }
+            contextWindow: contextWindow.flatMap { Int($0) }.flatMap { $0 > 0 ? $0 : nil },
+            answerID: answerID.flatMap { isAnswerID($0) ? $0.lowercased() : nil }
         )
+    }
+
+    static func isAnswerID(_ value: String) -> Bool {
+        (8...64).contains(value.count) && value.allSatisfy(\.isHexDigit)
+    }
+}
+
+/// An answer given from the menu bar, handed back to the Claude Code mod that is waiting on
+/// it (`GET /v1/answer/<id>`). Only offered when "Answer prompts from the menu bar" is on.
+enum MenuBarAnswer: Equatable {
+    case allow
+    case deny
+    /// AskUserQuestion answers: question text → the chosen label (several comma-joined).
+    case answers([String: String])
+
+    /// The JSON body the mod reads.
+    var json: Data {
+        let object: [String: Any]
+        switch self {
+        case .allow: object = ["behavior": "allow"]
+        case .deny: object = ["behavior": "deny", "message": "Denied from the AgentBar menu bar."]
+        case .answers(let answers): object = ["answers": answers]
+        }
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
 }
 
 /// A single item in the queue. Nothing here blocks a session: every item is a
 /// notification. Attention kinds (`question`, `permission`, `elicitation`) surface what
-/// Claude is waiting on so you can answer in the terminal and drive the badge count;
-/// informational kinds (`info`) auto-expire.
+/// Claude is waiting on so you can answer in the terminal (or, when `answerID` is set and
+/// still open, from the menu bar) and drive the badge count; informational kinds (`info`)
+/// auto-expire.
 @MainActor
 final class PendingItem: Identifiable, ObservableObject {
     enum Kind {
@@ -443,8 +474,12 @@ final class PendingItem: Identifiable, ObservableObject {
     /// environment. Focus resolves these to the right app so the correct window comes
     /// forward even when several terminals are open; nil falls back to a priority scan.
     let terminalHint: TerminalHint?
+    /// The id the Claude Code mod waits on for an answer from the menu bar, when it offered
+    /// one and answering is turned on. Whether it is still open lives in `QueueStore`.
+    let answerID: String?
 
-    init(sessionID: String, cwd: String, kind: Kind, source: AgentSource = .claude, terminalHint: TerminalHint? = nil) {
+    init(sessionID: String, cwd: String, kind: Kind, source: AgentSource = .claude, terminalHint: TerminalHint? = nil,
+         answerID: String? = nil) {
         self.id = UUID()
         self.sessionID = sessionID
         self.cwd = cwd
@@ -452,6 +487,7 @@ final class PendingItem: Identifiable, ObservableObject {
         self.kind = kind
         self.source = source
         self.terminalHint = terminalHint
+        self.answerID = answerID
     }
 
     /// True for attention items (Claude is waiting on you in the terminal); drives the
