@@ -567,8 +567,12 @@ final class QueueStore: ObservableObject {
     /// notification row and returns immediately. Attention kinds (question, permission,
     /// elicitation) persist until you dismiss them and drive the badge; informational
     /// kinds auto-expire.
+    ///
+    /// Returns true when the event's prompt can be answered from the menu bar (the mod
+    /// offered an answer id and answering is turned on), so the mod knows to wait for one.
+    @discardableResult
     func submit(event: HookEvent, payload: Data, terminal: TerminalHint? = nil, source: AgentSource = .claude,
-                extras: BridgeExtras = BridgeExtras()) {
+                extras: BridgeExtras = BridgeExtras()) -> Bool {
         let parsed = HookPayload(data: payload)
         let agentName = source.shortName
         DebugLog.logEvent("→ \(source.rawValue)/\(event.rawValue)", raw: payload)
@@ -610,34 +614,43 @@ final class QueueStore: ObservableObject {
             turnStart[parsed.sessionID] = Date()
         }
 
+        // Answering is Claude-only (the mod is the only bridge that can wait for an answer)
+        // and opt-in.
+        let answerID = source == .claude && extras.isMod && answeringEnabled ? extras.answerID : nil
+
         switch event {
         case .ask:
-            guard settingEnabled("notifyQuestions") else { return }
+            guard settingEnabled("notifyQuestions") else { return false }
             let questions = HookPayload.questions(from: parsed.toolInput)
-            guard !questions.isEmpty else { return }
-            enqueueAttention(PendingItem(
+            guard !questions.isEmpty else { return false }
+            // A free-text or number question has no options to pick in the popover.
+            let pickable = questions.allSatisfy { !$0.options.isEmpty }
+            let item = PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .question(questions),
                 source: source,
-                terminalHint: terminal
-            ))
+                terminalHint: terminal,
+                answerID: pickable ? answerID : nil
+            )
+            return enqueueAttention(item)
 
         case .permission:
-            guard settingEnabled("notifyPermissions") else { return }
+            guard settingEnabled("notifyPermissions") else { return false }
             let toolName = parsed.toolName ?? "Tool"
             let command = HookPayload.command(from: parsed.toolInput)
             let detail = HookPayload.prettyDetail(from: parsed.toolInput)
-            enqueueAttention(PendingItem(
+            return enqueueAttention(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
                 kind: .permission(toolName: toolName, command: command, detail: detail),
                 source: source,
-                terminalHint: terminal
+                terminalHint: terminal,
+                answerID: answerID
             ))
 
         case .elicit:
-            guard settingEnabled("notifyElicitations") else { return }
+            guard settingEnabled("notifyElicitations") else { return false }
             let request = HookPayload.elicitation(from: parsed.raw)
             if request.fields.isEmpty {
                 DebugLog.log("elicitation parsed to message-only (no schema fields recognized); raw payload above")
@@ -679,7 +692,7 @@ final class QueueStore: ObservableObject {
             // is no longer blocked on you, so any prompt still shown for this session was
             // answered in the terminal — clear it before showing that Claude is thinking again.
             clearAttention(for: parsed.sessionID)
-            guard settingEnabled("notifyWorking") else { return }
+            guard settingEnabled("notifyWorking") else { return false }
             enqueueWorking(PendingItem(
                 sessionID: parsed.sessionID,
                 cwd: parsed.cwd,
@@ -689,11 +702,11 @@ final class QueueStore: ObservableObject {
             ))
 
         case .notify:
-            guard settingEnabled("notifyIdle") else { return }
+            guard settingEnabled("notifyIdle") else { return false }
             // Dedupe: suppress idle banners for sessions that already have a pending
             // question or permission item (an unanswered prompt also fires Notification).
             if items.contains(where: { $0.sessionID == parsed.sessionID && $0.needsResponse }) {
-                return
+                return false
             }
             let body = parsed.message ?? "\(agentName) is waiting for your input."
             enqueueInfo(PendingItem(
@@ -713,7 +726,7 @@ final class QueueStore: ObservableObject {
             clearStatusRows(for: parsed.sessionID)
             let elapsed = turnStart[parsed.sessionID].map { Date().timeIntervalSince($0) }
             turnStart[parsed.sessionID] = nil
-            guard settingEnabled("notifyTaskFinished") else { return }
+            guard settingEnabled("notifyTaskFinished") else { return false }
             var body = parsed.message ?? "\(agentName) finished the current task."
             if let elapsed, elapsed >= 1 {
                 body += " · finished in \(DurationFormat.short(elapsed))"
@@ -727,7 +740,7 @@ final class QueueStore: ObservableObject {
             ))
 
         case .subagentStop:
-            guard settingEnabled("notifySubagent") else { return }
+            guard settingEnabled("notifySubagent") else { return false }
             let body = parsed.lastAssistantMessage ?? parsed.message ?? "A subagent finished."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
@@ -748,7 +761,7 @@ final class QueueStore: ObservableObject {
             sessionMode[parsed.sessionID] = nil
             sessionModel[parsed.sessionID] = nil
             sessionContext[parsed.sessionID] = nil
-            guard settingEnabled("notifySessionEnd") else { return }
+            guard settingEnabled("notifySessionEnd") else { return false }
             let body = parsed.endReason.map { "Session ended (\($0))." } ?? "The \(source.displayName) session ended."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
@@ -767,7 +780,7 @@ final class QueueStore: ObservableObject {
             clearAttention(for: parsed.sessionID)
             clearStatusRows(for: parsed.sessionID)
             turnStart[parsed.sessionID] = nil
-            guard settingEnabled("notifyErrors") else { return }
+            guard settingEnabled("notifyErrors") else { return false }
             let detail = parsed.errorMessage ?? parsed.errorType ?? "The turn ended due to an error."
             enqueueInfo(PendingItem(
                 sessionID: parsed.sessionID,
@@ -777,6 +790,7 @@ final class QueueStore: ObservableObject {
                 terminalHint: terminal
             ))
         }
+        return false
     }
 
     /// Enqueues an attention item (Claude is waiting in the terminal). It stays until you
@@ -788,12 +802,16 @@ final class QueueStore: ObservableObject {
     /// this session means whatever was shown before it has already been answered — clear the
     /// stale attention rows (and their banners) before adding this one, so an answered
     /// permission or question doesn't linger behind its successor.
-    private func enqueueAttention(_ item: PendingItem) {
+    @discardableResult
+    private func enqueueAttention(_ item: PendingItem) -> Bool {
         clearAttention(for: item.sessionID)
         clearStatusRows(for: item.sessionID)
+        // Opened before the banner is posted, so the banner carries Allow / Deny.
+        if let answerID = item.answerID { openAnswers.insert(answerID) }
         items.append(item)
         recordHistory(item)
         postBanner(item)
+        return item.answerID != nil
     }
 
     private func enqueueInfo(_ item: PendingItem) {
@@ -845,6 +863,7 @@ final class QueueStore: ObservableObject {
         for item in resolved {
             notificationManager?.remove(item)
             recordWait(for: item)
+            if let answerID = item.answerID { openAnswers.remove(answerID) }
         }
         items.removeAll { item in resolved.contains { $0.id == item.id } }
     }
@@ -863,6 +882,58 @@ final class QueueStore: ObservableObject {
         sessionContext = sessionContext.filter { sessionsLastSeen[$0.key] != nil }
     }
 
+    // MARK: - Answering from the menu bar
+
+    /// Whether "Answer prompts from the menu bar" is on. Off by default.
+    var answeringEnabled: Bool { UserDefaults.standard.bool(forKey: Self.answeringKey) }
+    nonisolated static let answeringKey = "answerFromMenuBar"
+
+    /// Answer ids the mod is still waiting on. Kept here rather than on the item so the
+    /// popover redraws when one closes.
+    @Published private(set) var openAnswers: Set<String> = []
+    /// Answers given but not yet collected by the mod's next poll.
+    private var givenAnswers: [String: Data] = [:]
+
+    /// Where one answer id stands, for `GET /v1/answer/<id>`.
+    enum AnswerState: Equatable {
+        case answered(Data)
+        case pending
+        /// Answered in the terminal, dismissed, superseded, withdrawn, or never offered.
+        case gone
+    }
+
+    /// True when this item's prompt can still be answered from the menu bar.
+    func canAnswer(_ item: PendingItem) -> Bool {
+        guard let answerID = item.answerID else { return false }
+        return openAnswers.contains(answerID)
+    }
+
+    func answerState(for answerID: String) -> AnswerState {
+        if let given = givenAnswers.removeValue(forKey: answerID) { return .answered(given) }
+        if openAnswers.contains(answerID), items.contains(where: { $0.answerID == answerID }) { return .pending }
+        if openAnswers.contains(answerID) { openAnswers.remove(answerID) }
+        return .gone
+    }
+
+    /// The mod stopped waiting: the row goes back to notify-only.
+    func withdrawAnswer(_ answerID: String) {
+        openAnswers.remove(answerID)
+        givenAnswers[answerID] = nil
+    }
+
+    /// Answers a prompt from the menu bar: hands the answer to the waiting mod and clears the
+    /// row, the same way an answer in the terminal would. Ignored once the prompt has closed.
+    func answer(_ item: PendingItem, with answer: MenuBarAnswer) {
+        guard canAnswer(item), let answerID = item.answerID else { return }
+        openAnswers.remove(answerID)
+        // A mod that died never collects its answer; keep the table from growing without end.
+        if givenAnswers.count > 32 { givenAnswers.removeAll() }
+        givenAnswers[answerID] = answer.json
+        notificationManager?.remove(item)
+        recordWait(for: item)
+        items.removeAll { $0.id == item.id }
+    }
+
     // MARK: - Dismissal
 
     /// Removes an item from the queue and clears its banner. Used both by the user's
@@ -875,6 +946,7 @@ final class QueueStore: ObservableObject {
     /// (an info row has no wait; an attention row clears via exactly one of these two paths).
     func dismiss(_ item: PendingItem) {
         notificationManager?.remove(item)
+        if let answerID = item.answerID { openAnswers.remove(answerID) }
         if item.needsResponse { recordWait(for: item) }
         items.removeAll { $0.id == item.id }
     }

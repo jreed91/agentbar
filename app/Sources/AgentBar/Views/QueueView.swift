@@ -6,10 +6,10 @@ import AppKit
 /// mood tracks the queue, then a streaming feed of events — newest first — each with a
 /// status tag and terminal-keycap actions.
 ///
-/// AgentBar is notify-only: there is no reply channel back into a session, so the keycaps
-/// bring your terminal forward (focus) or clear the row (dismiss) — they never answer a
-/// prompt for you. That is why the design's inline `y allow / n deny` render as honest
-/// focus/dismiss actions here.
+/// By default AgentBar is notify-only: the keycaps bring your terminal forward (focus) or
+/// clear the row (dismiss). With "Answer prompts from the menu bar" turned on, a Claude Code
+/// permission request also gets `y allow / n deny`, and a question gets its options, which
+/// answer the prompt in place of the terminal.
 struct QueueView: View {
     @ObservedObject private var queue = AppState.shared.queue
 
@@ -627,7 +627,13 @@ struct QueueView: View {
 
             // A live hook event waiting on you in this session, if any.
             if let attention {
-                attentionLines(attention)
+                if queue.canAnswer(attention), case .question(let questions) = attention.kind {
+                    QuestionAnswerView(questions: questions) { answers in
+                        queue.answer(attention, with: .answers(answers))
+                    }
+                } else {
+                    attentionLines(attention)
+                }
                 ElapsedLabel(since: attention.createdAt, color: attention.feedStatus.color)
 
                 // Command box, for permissions that carry one.
@@ -700,13 +706,17 @@ struct QueueView: View {
         }
     }
 
-    /// Row actions. AgentBar is notify-only, so these focus the terminal, clear a live
-    /// prompt row, or mute the project — they never answer for you. Quiet sessions show
-    /// focus and mute.
+    /// Row actions: focus the terminal, clear a live prompt row, or mute the project. A
+    /// permission request that can be answered from the menu bar also gets allow and deny.
+    /// Quiet sessions show focus and mute.
     @ViewBuilder
     private func actions(for row: SessionRow, attention: PendingItem?) -> some View {
         let muted = queue.isMuted(row.cwd)
         HStack(spacing: 10) {
+            if let attention, queue.canAnswer(attention), case .permission = attention.kind {
+                KeycapButton(key: "y", label: "allow", style: .primary) { queue.answer(attention, with: .allow) }
+                KeycapButton(key: "n", label: "deny", style: .deny) { queue.answer(attention, with: .deny) }
+            }
             KeycapButton(key: "↵", label: "focus", style: .focus) { TerminalFocus.focus(hint: row.terminalHint, cwd: row.cwd) }
             if attention != nil {
                 KeycapButton(key: "d", label: "dismiss", style: .deny) { dismissLive(row) }
@@ -763,8 +773,8 @@ struct QueueView: View {
         }
     }
 
-    /// Clears every live attention row for a session. There is no reply channel back into a
-    /// session, so this dismisses the notification once you have answered in the terminal.
+    /// Clears every live attention row for a session, once you have answered in the terminal.
+    /// A prompt that could be answered from the menu bar stays open in the terminal.
     private func dismissLive(_ row: SessionRow) {
         for item in row.liveItems where item.needsResponse {
             queue.dismiss(item)
@@ -1086,6 +1096,8 @@ struct QueueView: View {
         case "k": moveSelection(by: -1, in: rows); return true
         case "d": return dismissSelected()
         case "m": return muteSelected()
+        case "y": return answerSelected(with: .allow)
+        case "n": return answerSelected(with: .deny)
         case "t": return toggleTrailSelected()
         default: return false
         }
@@ -1117,6 +1129,16 @@ struct QueueView: View {
         if let row = selectedRow, row.liveItems.contains(where: { $0.needsResponse }) {
             dismissLive(row)
         }
+        return true
+    }
+
+    /// `y` / `n`: allow or deny the selected row's permission request, when it can be answered
+    /// from the menu bar. Not handled otherwise, so the keys stay free.
+    private func answerSelected(with answer: MenuBarAnswer) -> Bool {
+        guard let row = selectedRow,
+              let item = row.liveItems.first(where: { $0.needsResponse }),
+              queue.canAnswer(item), case .permission = item.kind else { return false }
+        queue.answer(item, with: answer)
         return true
     }
 
@@ -1157,5 +1179,72 @@ private struct WindowReader: NSViewRepresentable {
             guard let window = nsView.window else { return }
             onLayout(window)
         }
+    }
+}
+
+/// An AskUserQuestion answered from the popover: each question's options as keycaps. A single
+/// single-choice question sends on the first pick; otherwise picks toggle and `send` goes once
+/// every question has one. Multi-select picks are comma-joined, as Claude Code joins them.
+private struct QuestionAnswerView: View {
+    let questions: [AskQuestion]
+    let onSend: ([String: String]) -> Void
+
+    @State private var picks: [UUID: [String]] = [:]
+
+    private var sendsOnPick: Bool {
+        questions.count == 1 && questions.first?.multiSelect == false
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(questions) { question in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("→ \(question.question)")
+                        .font(feedFont(11, .medium))
+                        .foregroundStyle(Color.stQuestion)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(Array(question.options.enumerated()), id: \.element.id) { index, option in
+                        let picked = picks[question.id]?.contains(option.label) == true
+                        KeycapButton(
+                            key: picked ? "✓" : "\(index + 1)",
+                            label: option.label,
+                            style: picked ? .primary : .focus
+                        ) { pick(option.label, in: question) }
+                        .help(option.description ?? option.label)
+                    }
+                }
+            }
+            if !sendsOnPick {
+                let ready = questions.allSatisfy { !(picks[$0.id] ?? []).isEmpty }
+                KeycapButton(key: "⏎", label: ready ? "send answers" : "pick an answer for each", style: ready ? .primary : .deny) {
+                    if ready { send() }
+                }
+            }
+        }
+    }
+
+    private func pick(_ label: String, in question: AskQuestion) {
+        if sendsOnPick {
+            onSend([question.question: label])
+            return
+        }
+        var current = picks[question.id] ?? []
+        if question.multiSelect {
+            if let index = current.firstIndex(of: label) { current.remove(at: index) } else { current.append(label) }
+        } else {
+            current = [label]
+        }
+        picks[question.id] = current
+    }
+
+    private func send() {
+        var answers: [String: String] = [:]
+        for question in questions {
+            // Keep the options' order, whatever order they were clicked in.
+            let chosen = question.options.map(\.label).filter { (picks[question.id] ?? []).contains($0) }
+            answers[question.question] = chosen.joined(separator: ", ")
+        }
+        onSend(answers)
     }
 }

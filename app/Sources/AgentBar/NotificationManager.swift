@@ -9,13 +9,15 @@ import AppKit
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
 
-    /// Banner action identifiers. AgentBar is notify-only, so none of these answer a prompt —
-    /// they manage the notification itself (clear it, hush it for a while) or copy the
-    /// pending command to the clipboard so you can paste it in the terminal.
+    /// Banner action identifiers. Most manage the notification itself (clear it, hush it for
+    /// a while) or copy the pending command to the clipboard. Allow and Deny answer a
+    /// permission request, and only appear when it can be answered from the menu bar.
     private enum Action {
         static let dismiss = "AGENTBAR_DISMISS"
         static let snooze = "AGENTBAR_SNOOZE"
         static let copy = "AGENTBAR_COPY"
+        static let allow = "AGENTBAR_ALLOW"
+        static let deny = "AGENTBAR_DENY"
     }
 
     /// How long a snoozed item stays hushed before its banner is re-posted (if still pending).
@@ -72,7 +74,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.sound = Self.sound(for: item)
         }
 
-        let category = Self.buildCategory(id: categoryID, for: item)
+        let answerable = AppState.shared.queue.canAnswer(item)
+        let category = Self.buildCategory(id: categoryID, for: item, answerable: answerable)
         let request = UNNotificationRequest(
             identifier: item.id.uuidString,
             content: content,
@@ -90,13 +93,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Builds the per-item category. AgentBar is notify-only, so no action answers a prompt:
-    /// clicking the banner body still just brings your terminal forward. The buttons manage
-    /// the notification itself — Dismiss clears the row, Snooze hushes an attention item for
-    /// a while, and Copy command puts a permission's shell command on the clipboard so you
-    /// can paste it in the terminal.
-    private static func buildCategory(id: String, for item: PendingItem) -> UNNotificationCategory {
+    /// Builds the per-item category. Clicking the banner body brings your terminal forward.
+    /// A permission request that can be answered from the menu bar gets Allow and Deny
+    /// (Allow asks to unlock the Mac first). The other buttons manage the notification
+    /// itself: Dismiss clears the row, Snooze hushes an attention item for a while, and Copy
+    /// command puts a permission's shell command on the clipboard.
+    private static func buildCategory(id: String, for item: PendingItem, answerable: Bool) -> UNNotificationCategory {
         var actions: [UNNotificationAction] = []
+
+        if answerable, case .permission = item.kind {
+            actions.append(UNNotificationAction(
+                identifier: Action.allow,
+                title: "Allow",
+                options: [.authenticationRequired]
+            ))
+            actions.append(UNNotificationAction(
+                identifier: Action.deny,
+                title: "Deny",
+                options: [.destructive]
+            ))
+        }
 
         if case .permission(_, let command, _) = item.kind, command != nil {
             actions.append(UNNotificationAction(
@@ -229,6 +245,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         case Action.snooze:
             if let item { snooze(item) }
+
+        case Action.allow:
+            if let item { queue.answer(item, with: .allow) }
+
+        case Action.deny:
+            if let item { queue.answer(item, with: .deny) }
 
         default:
             TerminalFocus.focus(hint: item?.terminalHint, cwd: item?.cwd)

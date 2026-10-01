@@ -21,6 +21,7 @@ struct SettingsView: View {
 
     @AppStorage("infoExpirySeconds") private var infoExpirySeconds = 25.0
     @AppStorage("debugLogging") private var debugLogging = false
+    @AppStorage(QueueStore.answeringKey) private var answerFromMenuBar = false
 
     @State private var launchAtLogin = false
     @State private var launchError: String?
@@ -48,6 +49,16 @@ struct SettingsView: View {
                 Toggle("Subagent finished", isOn: $notifySubagent)
                 Toggle("Session ended", isOn: $notifySessionEnd)
                 Toggle("Errors & interruptions", isOn: $notifyErrors)
+            }
+
+            Section {
+                Toggle("Answer prompts from the menu bar", isOn: $answerFromMenuBar)
+            } header: {
+                Text("Answering")
+            } footer: {
+                Text("Allow or deny a Claude Code permission request, or pick a question's answer, from the popover or the banner. The prompt still opens in the terminal too, and whichever you answer first wins. Needs the Claude Code mod; Copilot prompts are always answered in the terminal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Banners") {

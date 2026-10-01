@@ -13,6 +13,16 @@ type World = {
   launches: boolean
   /** Whether server.json exists. */
   published: boolean
+  /** Whether "Answer prompts from the menu bar" is on in the app. */
+  answering?: boolean
+  /**
+   * What the app answers a poll with once `answerAfter` polls have gone by: an answer body
+   * (200), `'gone'` (410: answered in the terminal or cleared), or nothing yet (204).
+   */
+  answer?: Record<string, unknown> | 'gone'
+  answerAfter?: number
+  /** What the settings hooks beneath answer a permission request with. */
+  settingsDecision?: Record<string, unknown>
 }
 
 /**
@@ -23,6 +33,8 @@ type World = {
 function machine(on: On, port: number, world: World) {
   const posts: Post[] = []
   const opened: string[][] = []
+  const polls: string[] = []
+  const withdrawn: string[] = []
   let arrived: (() => void) | undefined
   const waitForPost = () =>
     new Promise<void>(resolve => {
@@ -42,8 +54,26 @@ function machine(on: On, port: number, world: World) {
     if (!world.running || !ours) return { deny: 'ECONNREFUSED' }
     if (!authorized) return { value: { status: 401, ok: false, headers: {}, text: 'unauthorized' } }
     if (e.url.endsWith('/v1/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
+    const answerPath = e.url.match(/\/v1\/answer\/([0-9a-f]+)/)
+    if (answerPath) {
+      const id = answerPath[1] ?? ''
+      if (e.init?.method === 'DELETE') {
+        withdrawn.push(id)
+        return { value: { status: 204, ok: true, headers: {}, text: '' } }
+      }
+      polls.push(id)
+      if (polls.length <= (world.answerAfter ?? 0) || world.answer === undefined) {
+        return { value: { status: 204, ok: true, headers: {}, text: '' } }
+      }
+      if (world.answer === 'gone') return { value: { status: 410, ok: false, headers: {}, text: '' } }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(world.answer) } }
+    }
     posts.push({ url: e.url, init: e.init, body: JSON.parse(e.init?.body ?? '{}') })
     arrived?.()
+    if (e.init?.headers?.['X-AgentBar-Answer-Id']) {
+      const text = JSON.stringify({ answerable: world.answering === true })
+      return { value: { status: 200, ok: true, headers: {}, text } }
+    }
     return { value: { status: 204, ok: true, headers: {}, text: '' } }
   })
   on('process.run', async ($, e) => {
@@ -59,16 +89,19 @@ function machine(on: On, port: number, world: World) {
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   // The launch wait polls with sleeps; answer them at once.
   on('clock.sleep', async () => ({ value: undefined }))
+  on('clock.now', async () => ({ value: 1_000 }))
   on('session.usage', async () => ({
     value: { startedAt: 0, context: { tokens: 123_456, window: 1_000_000, percent: 12 }, rateLimits: [] },
   }))
 
   // Nothing beneath the plugins answers a classic event in a test; these stand in for the
   // engine's own (no settings hooks configured).
-  on('classic.PermissionRequest', async () => ({}))
+  on('classic.PermissionRequest', async () =>
+    world.settingsDecision ? ({ decision: world.settingsDecision } as never) : {},
+  )
   on('classic.Notification', async () => ({}))
 
-  return { posts, opened, waitForPost }
+  return { posts, opened, polls, withdrawn, waitForPost }
 }
 
 describe('forwarding', () => {
@@ -159,5 +192,93 @@ describe('launching and failing open', () => {
     expect(reachedBottom).toBe(true)
     expect(result).toEqual({})
     expect(app.posts).toEqual([])
+  })
+})
+
+describe('answering from the menu bar', () => {
+  const bash = { tool_name: 'Bash', tool_input: { command: 'npm publish' } } as never
+
+  test('an allow picked in the menu bar answers the permission request', async ($, on) => {
+    const app = machine(on, 41101, { running: true, launches: false, published: true, answering: true, answer: { behavior: 'allow' }, answerAfter: 2 })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result.decision).toEqual({ behavior: 'allow' })
+    expect(app.posts[0]?.init?.headers?.['X-AgentBar-Answer-Id']).toMatch(/^[0-9a-f]{24}$/)
+    expect(app.polls.length).toBe(3)
+    expect(app.withdrawn).toEqual([])
+  })
+
+  test('a deny picked in the menu bar refuses the request with its message', async ($, on) => {
+    machine(on, 41102, { running: true, launches: false, published: true, answering: true, answer: { behavior: 'deny' } })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result.decision).toEqual({ behavior: 'deny', message: 'Denied from the AgentBar menu bar.' })
+  })
+
+  test('with answering turned off, the request is only forwarded and the terminal decides', async ($, on) => {
+    const app = machine(on, 41103, { running: true, launches: false, published: true, answering: false, answer: { behavior: 'allow' } })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result).toEqual({})
+    expect(app.posts.map(p => p.url)).toEqual(['http://127.0.0.1:41103/v1/permission'])
+    expect(app.polls).toEqual([])
+  })
+
+  test('a prompt answered in the terminal first leaves the decision to the terminal', async ($, on) => {
+    const app = machine(on, 41104, { running: true, launches: false, published: true, answering: true, answer: 'gone', answerAfter: 1 })
+
+    const result = await $.classic.PermissionRequest(bash)
+
+    expect(result).toEqual({})
+    expect(app.polls.length).toBe(2)
+    expect(app.withdrawn).toEqual([])
+  })
+
+  test('a settings hook that already decided is not offered to the menu bar', async ($, on) => {
+    const app = machine(on, 41105, {
+      running: true, launches: false, published: true, answering: true, answer: { behavior: 'deny' },
+      settingsDecision: { behavior: 'allow' },
+    })
+
+    const result = await $.classic.PermissionRequest(bash)
+    await app.waitForPost()
+
+    expect(result.decision).toEqual({ behavior: 'allow' })
+    expect(app.polls).toEqual([])
+  })
+
+  const questions = [
+    { question: 'Which database?', header: 'DB', options: [{ label: 'Postgres', description: '' }, { label: 'SQLite', description: '' }], multiSelect: false },
+  ]
+
+  test('an option picked in the menu bar answers AskUserQuestion and closes the terminal dialog', async ($, on) => {
+    machine(on, 41106, { running: true, launches: false, published: true, answering: true, answer: { answers: { 'Which database?': 'SQLite' } } })
+    let terminalClosed = false
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+      // The terminal dialog: open until someone answers or the call is taken away.
+      await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+      terminalClosed = true
+      return { result: { questions, answers: {} } } as never
+    })
+
+    const result = await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(result).toEqual(expect.objectContaining({ result: { questions, answers: { 'Which database?': 'SQLite' } } }))
+    expect(terminalClosed).toBe(true)
+  })
+
+  test('an AskUserQuestion answered in the terminal first keeps the terminal answer', async ($, on) => {
+    const app = machine(on, 41107, { running: true, launches: false, published: true, answering: true })
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+      await app.waitForPost()
+      return { result: { questions, answers: { 'Which database?': 'Postgres' } } } as never
+    })
+
+    const result = await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(result).toEqual(expect.objectContaining({ result: { questions, answers: { 'Which database?': 'Postgres' } } }))
   })
 })

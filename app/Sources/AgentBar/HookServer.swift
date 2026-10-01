@@ -193,8 +193,15 @@ final class HookServer {
             bridge: header("x-agentbar-bridge"),
             model: header("x-agentbar-model"),
             contextTokens: header("x-agentbar-context-tokens"),
-            contextWindow: header("x-agentbar-context-window")
+            contextWindow: header("x-agentbar-context-window"),
+            answerID: header("x-agentbar-answer-id")
         )
+
+        // The mod waiting on an answer from the menu bar: long-poll for it, or withdraw it.
+        if request.path.hasPrefix("/v1/answer/") {
+            routeAnswer(request, on: connection)
+            return
+        }
 
         switch (request.method, request.path) {
         case ("GET", "/v1/health"):
@@ -242,13 +249,78 @@ final class HookServer {
 
     private func dispatch(_ event: HookEvent, body: Data, hint: TerminalHint, source: AgentSource,
                           extras: BridgeExtras, connection: NWConnection) {
-        // Acknowledge immediately so the session never blocks, then enqueue the
-        // notification on the main actor. AgentBar is notify-only: there is no response
-        // to carry back, so the hook always sees an empty body (204) = terminal passthrough.
-        respond(connection, status: 204, body: "")
         let terminal = hint.isEmpty ? nil : hint
+        // A prompt the mod offers to have answered from the menu bar: reply once it is queued,
+        // saying whether an answer may come (answering is on), so the mod knows to poll.
+        if extras.answerID != nil {
+            Task { @MainActor in
+                let answerable = AppState.shared.queue.submit(
+                    event: event, payload: body, terminal: terminal, source: source, extras: extras)
+                self.queue.async {
+                    self.respond(connection, status: 200, body: "{\"answerable\":\(answerable)}",
+                                 contentType: "application/json")
+                }
+            }
+            return
+        }
+        // Everything else is acknowledged immediately so the session never blocks, then
+        // enqueued on the main actor. The empty body (204) means terminal passthrough.
+        respond(connection, status: 204, body: "")
         Task { @MainActor in
             AppState.shared.queue.submit(event: event, payload: body, terminal: terminal, source: source, extras: extras)
+        }
+    }
+
+    /// The longest a single answer poll is held open.
+    private let maxAnswerWait: TimeInterval = 10
+
+    /// `GET /v1/answer/<id>?wait=<ms>`: 200 with the answer, 204 when none came within the
+    /// wait, 410 once the prompt can no longer be answered from the menu bar (answered in the
+    /// terminal, dismissed, superseded, or answering is off). `DELETE` withdraws the offer.
+    private func routeAnswer(_ request: HTTPRequest, on connection: NWConnection) {
+        let target = request.path.dropFirst("/v1/answer/".count)
+        let parts = target.split(separator: "?", maxSplits: 1)
+        let answerID = parts.first.map(String.init)?.lowercased() ?? ""
+        guard BridgeExtras.isAnswerID(answerID) else {
+            respond(connection, status: 404, body: "not found")
+            return
+        }
+
+        switch request.method {
+        case "DELETE":
+            respond(connection, status: 204, body: "")
+            Task { @MainActor in AppState.shared.queue.withdrawAnswer(answerID) }
+        case "GET":
+            var waitMs = 0.0
+            if parts.count > 1 {
+                for pair in parts[1].split(separator: "&") {
+                    let kv = pair.split(separator: "=", maxSplits: 1)
+                    if kv.count == 2, kv[0] == "wait", let value = Double(kv[1]) { waitMs = value }
+                }
+            }
+            let wait = min(max(waitMs / 1000, 0), maxAnswerWait)
+            let deadline = Date().addingTimeInterval(wait)
+            Task { @MainActor in
+                while true {
+                    let state = AppState.shared.queue.answerState(for: answerID)
+                    let done: (Int, String)?
+                    switch state {
+                    case .answered(let json): done = (200, String(decoding: json, as: UTF8.self))
+                    case .gone: done = (410, "gone")
+                    case .pending: done = Date() >= deadline ? (204, "") : nil
+                    }
+                    if case let (status, body)? = done {
+                        self.queue.async {
+                            self.respond(connection, status: status, body: body,
+                                         contentType: status == 200 ? "application/json" : "text/plain; charset=utf-8")
+                        }
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
+        default:
+            respond(connection, status: 404, body: "not found")
         }
     }
 
@@ -280,6 +352,7 @@ final class HookServer {
         case 204: return "No Content"
         case 401: return "Unauthorized"
         case 404: return "Not Found"
+        case 410: return "Gone"
         case 413: return "Payload Too Large"
         default: return "OK"
         }
