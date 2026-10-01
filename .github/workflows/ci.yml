@@ -78,6 +78,40 @@ jobs:
       - name: Test plugin
         run: claude plugin test plugin
 
+  plugin-version:
+    name: Plugin version bumped
+    runs-on: ubuntu-latest
+    # Claude Code caches an installed plugin by its version, so a change to plugin/ that keeps
+    # the old version never reaches anyone who already has it installed.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check plugin and marketplace versions
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          head=$(jq -r .version plugin/.claude-plugin/plugin.json)
+          for v in "$(jq -r .metadata.version .claude-plugin/marketplace.json)" \
+                   "$(jq -r '.plugins[] | select(.name == "agentbar") | .version' .claude-plugin/marketplace.json)"; do
+            if [ "$v" != "$head" ]; then
+              echo "::error::marketplace.json says $v but plugin.json says $head; keep them in sync."
+              exit 1
+            fi
+          done
+          if git diff --quiet "$BASE" HEAD -- plugin/; then
+            echo "plugin/ unchanged"; exit 0
+          fi
+          base=$(git show "$BASE:plugin/.claude-plugin/plugin.json" | jq -r .version)
+          if [ "$base" = "$head" ]; then
+            echo "::error::plugin/ changed but its version is still $head. Bump it in plugin/.claude-plugin/plugin.json and .claude-plugin/marketplace.json, or installed copies will never update."
+            exit 1
+          fi
+          echo "plugin version $base -> $head"
+
   commitlint:
     name: Lint commit messages
     runs-on: ubuntu-latest
