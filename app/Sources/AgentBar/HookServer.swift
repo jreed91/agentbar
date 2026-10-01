@@ -210,6 +210,26 @@ final class HookServer {
             let pid = ProcessInfo.processInfo.processIdentifier
             let body = "{\"ok\":true,\"pid\":\(pid),\"version\":\"\(Self.appVersion)\"}"
             respond(connection, status: 200, body: body, contentType: "application/json")
+        case ("GET", "/v1/attention"):
+            // Read by the Claude Code mod's in-terminal band: who else is waiting on you.
+            Task { @MainActor in
+                let body = AppState.shared.attentionJSON()
+                self.queue.async {
+                    self.respond(connection, status: 200, body: String(decoding: body, as: UTF8.self),
+                                 contentType: "application/json")
+                }
+            }
+        case ("POST", "/v1/focus"):
+            // The band's "jump": bring that session's terminal forward. No body (or no
+            // `session_id`) jumps to the longest-waiting prompt, as the global hotkey does.
+            let object = try? JSONSerialization.jsonObject(with: request.body)
+            let sessionID = (object as? [String: Any])?["session_id"] as? String
+            Task { @MainActor in
+                let focused = AppState.shared.focusAttention(sessionID: sessionID)
+                self.queue.async {
+                    self.respond(connection, status: focused ? 204 : 404, body: focused ? "" : "not found")
+                }
+            }
         case ("POST", "/v1/ask"):
             dispatch(.ask, body: request.body, hint: hint, source: source, extras: extras, connection: connection)
         case ("POST", "/v1/permission"):

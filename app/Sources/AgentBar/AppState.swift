@@ -95,6 +95,34 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - In-terminal band
+
+    /// The body of `GET /v1/attention`: who is waiting on you, and the "focus needs me"
+    /// hotkey's label so the band can name it (null when none is set).
+    func attentionJSON() -> Data {
+        struct Body: Encodable {
+            let sessions: [AttentionEntry]
+            let jumpShortcut: String?
+            enum CodingKeys: String, CodingKey {
+                case sessions
+                case jumpShortcut = "jump_shortcut"
+            }
+        }
+        let body = Body(
+            sessions: queue.attentionEntries(),
+            jumpShortcut: shortcut(for: .focusNeedsMe)?.displayString
+        )
+        return (try? JSONEncoder().encode(body)) ?? Data(#"{"sessions":[]}"#.utf8)
+    }
+
+    /// Brings forward the terminal of a session waiting on you (`POST /v1/focus`): the named
+    /// one, or the longest-waiting when none is named. False when nothing waits there.
+    func focusAttention(sessionID: String?) -> Bool {
+        guard let item = queue.attentionItem(forSession: sessionID) else { return false }
+        TerminalFocus.focus(hint: item.terminalHint, cwd: item.cwd)
+        return true
+    }
+
     /// Called from the app delegate on termination; removes server.json.
     func stop() {
         server.stop()

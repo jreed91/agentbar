@@ -26,7 +26,7 @@ Claude Code session → AgentBar mod → AgentBar local server → menu bar / ba
 ```
 
 1. The plugin is a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/):
-   a small TypeScript module (`plugin/hooks/agentbar.ts`) that loads once per session and
+   a small TypeScript module (`plugin/hooks/agentbar.tsx`) that loads once per session and
    observes Claude Code's interaction points: turn starts
    (`UserPromptSubmit`, surfaced as a live "thinking" status), questions
    (`AskUserQuestion`), permission requests and denials (`PermissionRequest`,
@@ -43,13 +43,20 @@ Claude Code session → AgentBar mod → AgentBar local server → menu bar / ba
    skipped until the app is open).
 3. The mod passes every event on unchanged and sends in the background, so your session is
    never blocked. (With answering turned on, a permission request or question also waits
-   for an answer from the menu bar while the terminal prompt is open; see below.) AgentBar queues the item, badges the menu bar icon, and
-   posts a notification showing what Claude is asking.
+   for an answer from the menu bar while the terminal prompt is open; see below.) AgentBar
+   queues the item, badges the menu bar icon, and posts a notification showing what Claude
+   is asking.
 4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus"
    button in the popover) brings the session's own terminal/IDE window back to the front.
    Once you answer — allow or deny — AgentBar notices the session move past the prompt
    (`PostToolUse` / `PostToolUseFailure` / `PermissionDenied` / `Stop`) and clears the
    item automatically.
+5. Inside each Claude Code session, a one-line band above the prompt names your *other*
+   sessions waiting on you (`● 2 other sessions need you: api (permission), web (question)`).
+   **Jump** (or `j` after ctrl+x tab focuses the band) asks AgentBar to bring the
+   longest-waiting one's terminal forward; if you set the "focus needs me" global shortcut
+   in Settings, the band names it too. The band polls the app every 2 seconds, never
+   launches it, and hides when nothing else is waiting.
 
 **Fail-open contract:** the mod never holds up your session. If the app is missing,
 unreachable, or errors in any way, the event is silently dropped — exactly as if AgentBar
@@ -306,7 +313,8 @@ agentbar/
 ├── plugin/                            # the Claude Code plugin ("agentbar"), a Claude Code mod
 │   ├── .claude-plugin/plugin.json
 │   ├── hooks/hooks.json               # names the mod's module
-│   ├── hooks/agentbar.ts              # observes UserPromptSubmit / AskUserQuestion / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
+│   ├── hooks/agentbar.tsx             # the in-terminal band, and observes UserPromptSubmit / AskUserQuestion / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
+│   ├── types/index.d.ts               # the band's $.state contract
 │   └── tests/agentbar.test.ts         # claude plugin test
 ├── bin/agentbar-hook                  # dependency-free bash bridge (curl + sed) for Copilot, and --selftest
 ├── copilot/                           # GitHub Copilot CLI integration

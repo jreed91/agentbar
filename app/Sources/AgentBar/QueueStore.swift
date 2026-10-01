@@ -69,6 +69,27 @@ struct DashboardSummary {
     let idle: Int
 }
 
+/// One session waiting on you, as `GET /v1/attention` reports it to the Claude Code mod's
+/// in-terminal band. Built straight from the live attention items (not the de-duped roster),
+/// so two sessions in one directory are still two entries.
+struct AttentionEntry: Encodable, Equatable {
+    let sessionID: String
+    /// The session's working directory, for the band's project label.
+    let cwd: String
+    /// `permission` or `question` (MCP input reads as a question, as on the row).
+    let status: FeedStatus
+    /// The loudest prompt's one-line summary.
+    let summary: String
+    /// When the oldest prompt still pending arrived, in seconds since 1970.
+    let waitingSince: Double
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case cwd, status, summary
+        case waitingSince = "waiting_since"
+    }
+}
+
 /// The source of truth for the popover and the menu-bar badge. All access is on the
 /// main actor; the HTTP server hops here via `Task { @MainActor in ... }`.
 @MainActor
@@ -391,6 +412,40 @@ final class QueueStore: ObservableObject {
             }
             .min(by: { $0.waitingSince < $1.waitingSince })?
             .row
+    }
+
+    /// Every session with a prompt waiting on you, longest-waiting first, for the in-terminal
+    /// band (`GET /v1/attention`). Muted projects are left out, as they are from banners.
+    func attentionEntries() -> [AttentionEntry] {
+        var bySession: [String: [PendingItem]] = [:]
+        for item in items where item.needsResponse && !item.sessionID.isEmpty && !isMuted(item.cwd) {
+            bySession[item.sessionID, default: []].append(item)
+        }
+        return bySession
+            .compactMap { entry -> AttentionEntry? in
+                let (sessionID, live) = entry
+                guard let loudest = sortedByLoudness(live).first,
+                      let oldest = live.map(\.createdAt).min() else { return nil }
+                return AttentionEntry(
+                    sessionID: sessionID,
+                    cwd: loudest.cwd,
+                    status: loudest.feedStatus,
+                    summary: loudest.summaryLine,
+                    waitingSince: oldest.timeIntervalSince1970
+                )
+            }
+            .sorted { ($0.waitingSince, $0.sessionID) < ($1.waitingSince, $1.sessionID) }
+    }
+
+    /// The attention item to jump to for `POST /v1/focus`: the named session's, or with no
+    /// session named the longest-waiting one, as the global "focus needs me" hotkey picks.
+    /// Nil when nothing waits there.
+    func attentionItem(forSession sessionID: String?) -> PendingItem? {
+        let waiting = items.filter { $0.needsResponse && !$0.sessionID.isEmpty }
+        if let sessionID {
+            return waiting.first { $0.sessionID == sessionID }
+        }
+        return waiting.min { $0.createdAt < $1.createdAt }
     }
 
     // MARK: - Session roster (disk scan + live merge)
