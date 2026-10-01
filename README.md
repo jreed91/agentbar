@@ -51,12 +51,14 @@ Claude Code session → AgentBar mod → AgentBar local server → menu bar / ba
    Once you answer — allow or deny — AgentBar notices the session move past the prompt
    (`PostToolUse` / `PostToolUseFailure` / `PermissionDenied` / `Stop`) and clears the
    item automatically.
-5. Inside each Claude Code session, a one-line band above the prompt names your *other*
-   sessions waiting on you (`● 2 other sessions need you: api (permission), web (question)`).
-   **Jump** (or `j` after ctrl+x tab focuses the band) asks AgentBar to bring the
-   longest-waiting one's terminal forward; if you set the "focus needs me" global shortcut
-   in Settings, the band names it too. The band polls the app every 2 seconds, never
-   launches it, and hides when nothing else is waiting.
+5. Inside each Claude Code session, a band above the prompt gives each of your *other*
+   sessions waiting on you a row: the project, what it asks, and how long it has waited
+   (`● api  needs permission · Wants to run Bash  4m  Jump`). Up to three rows show,
+   longest-waiting first, and the rest fold into "+N more". A row's **Jump** (or `j` for
+   the first, after ctrl+x tab focuses the band) asks AgentBar to bring that session's
+   terminal forward; if you set the "focus needs me" global shortcut in Settings, the
+   first row names it too. The band polls the app every 2 seconds, never launches it,
+   and hides when nothing else is waiting.
 
 **Fail-open contract:** the mod never holds up your session. If the app is missing,
 unreachable, or errors in any way, the event is silently dropped — exactly as if AgentBar

@@ -18,6 +18,8 @@ declare module 'claude-code' {
       waiting: AgentBarWaiting[]
       /** AgentBar's global "focus needs me" hotkey, as it labels it (`⌥⇧A`); null when unset. */
       jumpShortcut: string | null
+      /** The time the band reads waiting times against, in seconds since 1970; 0 until known. */
+      now: number
     }
   }
 }
