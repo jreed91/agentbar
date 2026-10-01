@@ -1,8 +1,8 @@
 # AgentBar
 
 A native macOS menu bar app that watches your terminal coding agents — **Claude Code** and
-**GitHub Copilot CLI** — through a zero-config plugin (Claude) and a one-command hook install
-(Copilot). When an agent needs something from you — a multiple-choice question, a permission
+**GitHub Copilot CLI** — through a zero-config Claude Code mod (Claude) and a one-command hook
+install (Copilot). When an agent needs something from you — a multiple-choice question, a permission
 prompt, or it has gone idle waiting for input — AgentBar notifies you and brings your terminal
 back to the front so you can answer there. It is a **notification tool, not an input tool**: it
 never blocks your session and never sits between you and the agent.
@@ -16,12 +16,14 @@ never blocks your session and never sits between you and the agent.
 ## How it works
 
 ```
-Claude Code session → plugin hook → AgentBar local server → menu bar / banner
+Claude Code session → AgentBar mod → AgentBar local server → menu bar / banner
         │                              (returns immediately)
         └── session continues; you answer the prompt in your terminal
 ```
 
-1. The plugin registers hooks across Claude Code's interaction points: turn starts
+1. The plugin is a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/):
+   a small TypeScript module (`plugin/hooks/agentbar.ts`) that loads once per session and
+   observes Claude Code's interaction points: turn starts
    (`UserPromptSubmit`, surfaced as a live "thinking" status), questions
    (`AskUserQuestion`), permission requests and denials (`PermissionRequest`,
    `PermissionDenied`), MCP input requests (`Elicitation`), tool completions and failures
@@ -29,12 +31,14 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
    auto-clear a prompt once you answer it in the terminal, whether you allow or deny),
    idle notifications, and the task-finished / subagent-finished / session-ended
    / run-interrupted (`Stop`, `SubagentStop`, `SessionEnd`, `StopFailure`) events.
-2. When one fires, the bundled `bin/agentbar-hook` script reads the payload and POSTs it
-   to AgentBar's local HTTP server (`127.0.0.1`, ephemeral port, per-launch bearer token
-   published to `~/Library/Application Support/AgentBar/server.json`). It launches the
-   app first if it is not already running.
-3. The server acknowledges immediately (fire-and-forget), so the hook returns at once and
-   your session is never blocked. AgentBar queues the item, badges the menu bar icon, and
+2. When one fires, the mod POSTs the event's hook input to AgentBar's local HTTP server
+   (`127.0.0.1`, ephemeral port, per-launch bearer token published to
+   `~/Library/Application Support/AgentBar/server.json`), along with the session's live
+   model and context-window fill. It launches the app first if it is not already running
+   (in the terminal; the desktop Code tab can't start programs, so there the event is
+   skipped until the app is open).
+3. The mod only observes: it passes every event on unchanged and sends in the background,
+   so your session is never blocked. AgentBar queues the item, badges the menu bar icon, and
    posts a notification showing what Claude is asking.
 4. You answer the prompt in your terminal as usual. Clicking the banner (or the "Focus"
    button in the popover) brings the session's own terminal/IDE window back to the front.
@@ -42,10 +46,10 @@ Claude Code session → plugin hook → AgentBar local server → menu bar / ban
    (`PostToolUse` / `PostToolUseFailure` / `PermissionDenied` / `Stop`) and clears the
    item automatically.
 
-**Fail-open contract:** the CLI always returns immediately. If the app is missing,
-unreachable, or errors in any way, the hook exits cleanly with no output — exactly as if
-AgentBar were never installed. Because AgentBar never returns a decision to Claude Code,
-every prompt is always answered in the terminal.
+**Fail-open contract:** the mod never holds up your session. If the app is missing,
+unreachable, or errors in any way, the event is silently dropped — exactly as if AgentBar
+were never installed. Because AgentBar never returns a decision to Claude Code, every prompt
+is always answered in the terminal.
 
 ## Install
 
@@ -64,6 +68,7 @@ URL is required because the repository is not named `homebrew-*`.
 
 ### 2. Plugin (Claude Code marketplace)
 
+The plugin is a Claude Code mod and needs **Claude Code 2.1.287 or newer** (`claude update`).
 In Claude Code:
 
 ```
@@ -71,7 +76,12 @@ In Claude Code:
 /plugin install agentbar@agentbar
 ```
 
-The plugin's hooks activate automatically on install — no `settings.json` editing needed.
+The mod loads automatically on install — no `settings.json` editing needed.
+
+**Upgrading from plugin 0.x:** 0.x fed AgentBar through shell command hooks; 1.0 replaces
+them with the mod. Run `claude update`, then `/plugin marketplace update agentbar` and
+`/reload-plugins` in Claude Code. Settings → Setup shows **Connected via mod** once it's live,
+and tells you if events are still arriving the old way.
 
 ### 3. GitHub Copilot CLI (optional)
 
@@ -87,7 +97,7 @@ make install-copilot                   # writes ~/.copilot/hooks/agentbar.json
 ```
 
 `make install-copilot` (a thin wrapper over `scripts/install-copilot-hooks.sh`) stamps the
-absolute path of the hook bridge bundled inside `AgentBar.app` into
+absolute path of the `agentbar-hook` bash bridge bundled inside `AgentBar.app` into
 `~/.copilot/hooks/agentbar.json`. Restart any running Copilot sessions and they will start
 feeding AgentBar. Remove the wiring with `make uninstall-copilot`.
 
@@ -174,8 +184,10 @@ shows the project, its first prompt as a title, a message count, and when it was
 active; quiet sessions are tagged `IDLE`. For Claude Code sessions each row also carries a
 meta line — the **model** the latest turn ran on, the session's **permission mode**
 (`default` / `plan` / `accept edits` / `bypass`), and its **context usage** (`ctx 48k · 24%`,
-tinting amber then red as the window fills) — all read from Claude Code's own transcript and
-hook events. The usage percentage is sized to the model's context window — 200k for most,
+tinting amber then red as the window fills). The mod reports the model and context fill live
+with each event, including the model's real window size; between events, and for sessions
+that haven't sent one, they're read from Claude Code's own transcript. Without a reported
+window the usage percentage is sized to the model's context window — 200k for most,
 1M for models that ship a 1M window (e.g. Opus 4.8, Sonnet 5), and 1M for any session whose
 usage has crossed the 200k tier (a 200k model can't exceed its window, so it must be a larger
 one, such as a Sonnet 4+ session on the 1M beta the transcript doesn't record).
@@ -248,10 +260,12 @@ Other useful targets: `make build`, `make bundle`, `make adhoc`, `make clean`. S
 
 Run the unit tests (hook-payload parsers, transcript/session-state parsers, queue lifecycle,
 and duration formatting) with `make test` (or
-`swift test --package-path app`); they run in CI on every pull request. To diagnose a broken
-install end to end, `make doctor` checks that both halves are wired up, and
-`plugin/bin/agentbar-hook --selftest` probes the CLI → server pipeline and prints what it
-finds.
+`swift test --package-path app`). The mod has its own: `make test-plugin` runs
+`claude plugin validate plugin` and `claude plugin test plugin` (needs the `claude` CLI).
+Both run in CI on every pull request. While working on the mod, `claude --plugin-dir ./plugin`
+hot-reloads it on every save. To diagnose a broken install end to end, `make doctor` checks
+that both halves are wired up, and `bin/agentbar-hook --selftest` probes the app's server
+and prints what it finds.
 
 Repository layout:
 
@@ -259,10 +273,12 @@ Repository layout:
 agentbar/
 ├── .claude-plugin/marketplace.json    # plugin marketplace (repo root)
 ├── docs/implementation-plan.md        # full design & decisions
-├── plugin/                            # the Claude Code plugin ("agentbar")
+├── plugin/                            # the Claude Code plugin ("agentbar"), a Claude Code mod
 │   ├── .claude-plugin/plugin.json
-│   ├── hooks/hooks.json               # UserPromptSubmit / PreToolUse / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
-│   └── bin/agentbar-hook              # dependency-free bash bridge (curl + sed); agent-agnostic
+│   ├── hooks/hooks.json               # names the mod's module
+│   ├── hooks/agentbar.ts              # observes UserPromptSubmit / AskUserQuestion / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
+│   └── tests/agentbar.test.ts         # claude plugin test
+├── bin/agentbar-hook                  # dependency-free bash bridge (curl + sed) for Copilot, and --selftest
 ├── copilot/                           # GitHub Copilot CLI integration
 │   └── hooks/agentbar.json            # hook config template → ~/.copilot/hooks/agentbar.json
 ├── app/                               # Swift package for AgentBar.app

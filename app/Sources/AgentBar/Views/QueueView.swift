@@ -923,9 +923,9 @@ struct QueueView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 if let tokens = row.contextTokens {
-                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens, model: row.model))%")
+                    Text("ctx \(formatTokens(tokens)) · \(contextPercent(tokens, model: row.model, window: row.contextWindow))%")
                         .font(feedFont(9.5))
-                        .foregroundStyle(contextColor(tokens, model: row.model))
+                        .foregroundStyle(contextColor(tokens, model: row.model, window: row.contextWindow))
                 }
                 Spacer(minLength: 0)
             }
@@ -937,6 +937,11 @@ struct QueueView: View {
     private func prettyModel(_ raw: String) -> String {
         var name = raw
         if name.hasPrefix("claude-") { name.removeFirst("claude-".count) }
+        // The mod reports the model as `/model` shows it, which can carry a context suffix
+        // (`claude-opus-5-5[1m]`); the gauge already says how big the window is.
+        if let suffix = name.range(of: "\\[[^\\]]*\\]$", options: .regularExpression) {
+            name = String(name[name.startIndex..<suffix.lowerBound])
+        }
         if let stamp = name.range(of: "-[0-9]{6,}$", options: .regularExpression) {
             name = String(name[name.startIndex..<stamp.lowerBound])
         }
@@ -990,16 +995,17 @@ struct QueueView: View {
         name.contains("opus-4-8") || name.contains("sonnet-5")
     }
 
-    /// Context usage as a whole-number percent of the model's window, clamped to 0…100.
-    private func contextPercent(_ tokens: Int, model: String?) -> Int {
-        let window = contextWindow(for: model, usedTokens: tokens)
+    /// Context usage as a whole-number percent of the model's window, clamped to 0…100. A
+    /// window the Claude Code mod reported wins over the one inferred from the model name.
+    private func contextPercent(_ tokens: Int, model: String?, window reported: Int?) -> Int {
+        let window = reported ?? contextWindow(for: model, usedTokens: tokens)
         return max(0, min(100, Int((Double(tokens) / Double(window) * 100).rounded())))
     }
 
     /// Dim under three-quarters full, amber past that, red as it approaches the window — a
     /// quiet at-a-glance warning that a session is running low on context.
-    private func contextColor(_ tokens: Int, model: String?) -> Color {
-        let percent = contextPercent(tokens, model: model)
+    private func contextColor(_ tokens: Int, model: String?, window: Int?) -> Color {
+        let percent = contextPercent(tokens, model: model, window: window)
         if percent >= 90 { return .stPermission }
         if percent >= 75 { return .feedAmberText }
         return .feedDim

@@ -9,7 +9,7 @@ final class QueueStoreHealthTests: XCTestCase {
 
     /// `recordHook` persists per-source timestamps to the standard UserDefaults. Snapshot and
     /// restore those keys so a test never leaks a "heard from" state into another test or run.
-    private static let hookKeys = ["lastHookAtClaude", "lastHookAtCopilot"]
+    private static let hookKeys = ["lastHookAtClaude", "lastHookAtCopilot", "claudeBridgeIsMod"]
     private var savedHookKeys: [String: Any?] = [:]
 
     override func setUp() {
@@ -69,5 +69,44 @@ final class QueueStoreHealthTests: XCTestCase {
         let second = makeIsolatedQueueStore()
         XCTAssertNotNil(second.lastHookAt(for: .claude),
                         "a relaunch after real activity should not claim 'never heard from'")
+    }
+
+    // MARK: - Bridge kind
+
+    func testNoClaudeEventLeavesTheBridgeUnknown() {
+        let queue = makeIsolatedQueueStore()
+        XCTAssertNil(queue.claudeBridgeIsMod)
+    }
+
+    func testAClaudeEventFromTheModMarksTheModBridge() {
+        let queue = makeIsolatedQueueStore()
+        queue.submit(event: .working, payload: payload(sessionID: "s1"), source: .claude,
+                     extras: BridgeExtras(isMod: true))
+        XCTAssertEqual(queue.claudeBridgeIsMod, true)
+    }
+
+    func testAClaudeEventWithoutTheModHeaderMarksTheOldBridge() {
+        let queue = makeIsolatedQueueStore()
+        queue.submit(event: .working, payload: payload(sessionID: "s1"), source: .claude)
+        XCTAssertEqual(queue.claudeBridgeIsMod, false,
+                       "an event from a pre-1.0 plugin should prompt the Setup panel's update note")
+    }
+
+    func testCopilotEventsDoNotChangeTheClaudeBridge() {
+        let queue = makeIsolatedQueueStore()
+        queue.submit(event: .working, payload: payload(sessionID: "s1"), source: .claude,
+                     extras: BridgeExtras(isMod: true))
+        queue.submit(event: .working, payload: payload(sessionID: "c1"), source: .copilot)
+        XCTAssertEqual(queue.claudeBridgeIsMod, true,
+                       "Copilot always uses the bash bridge; it says nothing about the Claude plugin")
+    }
+
+    func testTheBridgeKindPersistsAcrossInstances() {
+        let first = makeIsolatedQueueStore()
+        first.submit(event: .stop, payload: payload(sessionID: "s1"), source: .claude,
+                     extras: BridgeExtras(isMod: true))
+
+        let second = makeIsolatedQueueStore()
+        XCTAssertEqual(second.claudeBridgeIsMod, true)
     }
 }

@@ -22,7 +22,7 @@
 #
 # The bridge is resolved in priority order: $AGENTBAR_HOOK, then the installed app bundle
 # (/Applications/AgentBar.app/Contents/Resources/agentbar-hook), then the repo copy
-# (plugin/bin/agentbar-hook) for local development.
+# (bin/agentbar-hook) for local development.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,7 +44,7 @@ fi
 
 # Resolve the bridge script.
 APP_HOOK="/Applications/AgentBar.app/Contents/Resources/agentbar-hook"
-REPO_HOOK="${REPO_ROOT}/plugin/bin/agentbar-hook"
+REPO_HOOK="${REPO_ROOT}/bin/agentbar-hook"
 if [ -n "${AGENTBAR_HOOK:-}" ]; then
   # An explicit override must be an absolute path to an executable — Copilot runs
   # hooks from arbitrary working directories, so a relative or missing path would

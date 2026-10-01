@@ -63,13 +63,23 @@ struct SetupSection: View {
         }
     }
 
-    /// 2. Claude Code plugin — pass once any Claude hook has been heard; otherwise the install
-    /// commands with a Copy button.
+    /// 2. Claude Code plugin — pass once any Claude hook has been heard, saying whether it
+    /// arrived through the mod (plugin 1.0+) or the old shell hooks (with the update command);
+    /// otherwise the install commands with a Copy button.
     @ViewBuilder
     private var claudeRow: some View {
         if let last = queue.lastHookAt(for: .claude) {
-            row(.pass, title: "Claude Code plugin",
-                detail: "Last event \(SetupChecks.relativeAgo(from: last, to: now))")
+            let ago = SetupChecks.relativeAgo(from: last, to: now)
+            if queue.claudeBridgeIsMod == false {
+                row(.optional, title: "Claude Code plugin",
+                    detail: "Last event \(ago), via the old shell hooks. Update Claude Code and the plugin to connect via mod (first line in a shell, the rest in Claude Code):\n\(SetupChecks.claudeUpdateCommands)") {
+                    Button("Copy") { copyToPasteboard(SetupChecks.claudeUpdateCommands) }
+                        .controlSize(.small)
+                }
+            } else {
+                row(.pass, title: "Claude Code plugin",
+                    detail: "Connected via mod · last event \(ago)")
+            }
         } else {
             row(.fail, title: "Claude Code plugin",
                 detail: "Never heard from. In Claude Code run:\n\(SetupChecks.claudeInstallCommands)") {
@@ -225,6 +235,16 @@ enum SetupChecks {
     static let claudeInstallCommands = """
     /plugin marketplace add jreed91/agentbar
     /plugin install agentbar@agentbar
+    """
+
+    /// The commands that move an existing install onto the 1.0 plugin (the Claude Code mod),
+    /// one per line: update Claude Code itself from a shell, then refresh the marketplace and
+    /// reload plugins from inside Claude Code. Shown and copied when events still arrive
+    /// through the old shell hooks.
+    static let claudeUpdateCommands = """
+    claude update
+    /plugin marketplace update agentbar
+    /reload-plugins
     """
 
     /// Whether the Copilot hook bridge (`~/.copilot/hooks/agentbar.json`, written by

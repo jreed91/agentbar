@@ -63,7 +63,7 @@ fi
 # (Claude Code references it via ${CLAUDE_PLUGIN_ROOT} from the marketplace-installed plugin;
 # Copilot's personal hooks need a fixed path, and the installed app bundle is that anchor —
 # scripts/install-copilot-hooks.sh looks here first).
-HOOK_SRC="${REPO_ROOT}/plugin/bin/agentbar-hook"
+HOOK_SRC="${REPO_ROOT}/bin/agentbar-hook"
 if [ -f "$HOOK_SRC" ]; then
   cp "$HOOK_SRC" "${CONTENTS}/Resources/agentbar-hook"
   chmod +x "${CONTENTS}/Resources/agentbar-hook"

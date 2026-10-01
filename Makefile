@@ -16,7 +16,7 @@ DIST      := dist
 APP_BUNDLE := $(DIST)/$(APP_NAME).app
 ZIP        := $(DIST)/$(APP_NAME)-$(VERSION).zip
 
-.PHONY: all build test bundle sign adhoc zip notarize install clean icon doctor \
+.PHONY: all build test test-plugin bundle sign adhoc zip notarize install clean icon doctor \
         install-copilot uninstall-copilot
 
 all: bundle
@@ -27,6 +27,11 @@ build:
 # Run the Swift unit tests (payload/transcript parsers, queue lifecycle, formatting).
 test:
 	swift test --package-path app
+
+# Validate and test the Claude Code mod (plugin/). Needs the `claude` CLI on PATH.
+test-plugin:
+	claude plugin validate plugin
+	claude plugin test plugin
 
 # Verify both halves are wired up: the app installed & responding, and the plugin
 # hook present and executable. The two-part install (cask + plugin) is the most common
@@ -39,10 +44,15 @@ doctor:
 	else \
 		echo "warn app not in /Applications — install the cask or run 'make install'"; \
 	fi
-	@if [ -x "plugin/bin/agentbar-hook" ]; then \
-		echo "ok   plugin hook present and executable"; \
+	@if [ -f "plugin/hooks/agentbar.ts" ]; then \
+		echo "ok   Claude Code mod present (plugin/hooks/agentbar.ts)"; \
 	else \
-		echo "FAIL plugin/bin/agentbar-hook missing or not executable"; \
+		echo "FAIL plugin/hooks/agentbar.ts missing"; \
+	fi
+	@if [ -x "bin/agentbar-hook" ]; then \
+		echo "ok   hook bridge present and executable (used by Copilot)"; \
+	else \
+		echo "FAIL bin/agentbar-hook missing or not executable"; \
 	fi
 	@if [ -f "$${COPILOT_CONFIG_DIR:-$$HOME/.copilot}/hooks/agentbar.json" ]; then \
 		echo "ok   Copilot hooks installed: $${COPILOT_CONFIG_DIR:-$$HOME/.copilot}/hooks/agentbar.json"; \
@@ -54,7 +64,7 @@ doctor:
 		|| echo "FAIL curl not found — the hook needs it"
 	@echo "---"
 	@echo "Live pipeline check (launches AgentBar if needed):"
-	@plugin/bin/agentbar-hook --selftest || true
+	@bin/agentbar-hook --selftest || true
 
 # Regenerate app/Support/AppIcon.icns from the pure-Python design source.
 # Only needed when the icon design changes; the .icns is committed.

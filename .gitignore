@@ -5,3 +5,6 @@ dist/
 .swiftpm/
 xcuserdata/
 node_modules/
+# Type declarations Claude Code writes beside a mod it loads from this folder
+plugin/.claude-plugin/types/
+plugin/tsconfig.json
