@@ -300,6 +300,94 @@ describe('answering from the menu bar', () => {
   })
 })
 
+describe('clearing a prompt that is over', () => {
+  const questions = [
+    { question: 'Which database?', header: 'DB', options: [{ label: 'Postgres', description: '' }, { label: 'SQLite', description: '' }], multiSelect: false },
+  ]
+  const urls = (app: { posts: Post[] }) => app.posts.map(p => new URL(p.url).pathname)
+
+  for (const answering of [false, true]) {
+    test(`a question answered in the terminal clears its row after the ask (answering ${answering ? 'on' : 'off'})`, async ($, on) => {
+      const app = machine(on, 41201 + Number(answering), { running: true, launches: false, published: true, answering })
+      on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+        await app.waitForPost()
+        return { result: { questions, answers: { 'Which database?': 'Postgres' } } } as never
+      })
+
+      await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+      expect(urls(app)).toEqual(['/v1/ask', '/v1/denied'])
+      expect(app.posts[1]?.body).toEqual({ hook_event_name: 'AskUserQuestion', session_id: 'session-1', cwd: '/work/project' })
+    })
+  }
+
+  test('a question dismissed in the terminal clears its row', async ($, on) => {
+    const app = machine(on, 41203, { running: true, launches: false, published: true })
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+      await app.waitForPost()
+      return { deny: 'The user dismissed the question.' }
+    })
+
+    await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(urls(app)).toEqual(['/v1/ask', '/v1/denied'])
+  })
+
+  test('a question cut short by an interrupt clears its row and the interrupt goes on', async ($, on) => {
+    const app = machine(on, 41204, { running: true, launches: false, published: true })
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+      await app.waitForPost()
+      throw new Error('Interrupted')
+    })
+
+    await expect($.tool.call({ tool: 'AskUserQuestion', questions } as never)).rejects.toThrow()
+
+    expect(urls(app)).toEqual(['/v1/ask', '/v1/denied'])
+  })
+
+  test('a question answered from the menu bar sends no clear of its own', async ($, on) => {
+    const app = machine(on, 41205, { running: true, launches: false, published: true, answering: true, answer: { answers: { 'Which database?': 'SQLite' } } })
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+      await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+      return { result: { questions, answers: {} } } as never
+    })
+
+    await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+
+    expect(urls(app)).toEqual(['/v1/ask'])
+  })
+
+  test('an interrupted turn clears whatever prompt was still shown', async ($, on) => {
+    const app = machine(on, 41206, { running: true, launches: false, published: true })
+    on('turn.complete', async () => ({ text: '' }))
+
+    await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 't1', reason: 'aborted' })
+    await app.waitForPost()
+
+    expect(urls(app)).toEqual(['/v1/denied'])
+    expect(app.posts[0]?.body.session_id).toBe('session-1')
+  })
+
+  test("a finished turn, or a subagent's interrupted one, clears nothing here", async ($, on) => {
+    const app = machine(on, 41207, { running: true, launches: false, published: true })
+    on('turn.complete', async () => ({ text: '' }))
+
+    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+    await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 't2', agentId: 'a1', reason: 'aborted' })
+
+    expect(app.posts).toEqual([])
+  })
+
+  test('with AgentBar not running, a clear never launches it', async ($, on) => {
+    const app = machine(on, 41208, { running: false, launches: true, published: false })
+    on('turn.complete', async () => ({ text: '' }))
+
+    await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 't1', reason: 'aborted' })
+
+    expect(app.opened).toEqual([])
+  })
+})
+
 describe('the band above the prompt', () => {
   const BAND = {
     hasSurvey: false,

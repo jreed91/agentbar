@@ -108,7 +108,10 @@ export const register: Register = on => {
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     // The envelope's reserved fields aside, `e` is the tool's input.
     const { tool, tool_use_id: _id, ...tool_input } = e
+    const where = async () => ({ session_id: await $.session.id(), cwd: await $.session.cwd() })
     let settled = false
+    let offered = () => {}
+    const posted = new Promise<void>(resolve => (offered = resolve))
     const terminal = next(e)
     terminal.then(
       () => (settled = true),
@@ -117,15 +120,10 @@ export const register: Register = on => {
     const menuBar = offer(
       $,
       'ask',
-      async () => ({
-        hook_event_name: 'PreToolUse',
-        session_id: await $.session.id(),
-        cwd: await $.session.cwd(),
-        tool_name: tool,
-        tool_input,
-      }),
+      async () => ({ hook_event_name: 'PreToolUse', ...(await where()), tool_name: tool, tool_input }),
       next.signal,
       () => settled,
+      offered,
     )
     const first = await Promise.race([
       terminal.then(
@@ -134,8 +132,37 @@ export const register: Register = on => {
       ),
       menuBar.then(answer => (answer && 'answers' in answer ? answer : undefined)),
     ])
-    if (!first || settled) return terminal
+    if (!first || settled) {
+      // Answered, refused or dismissed in the terminal, or the turn was interrupted: the
+      // question is over either way, so tell AgentBar to clear its row. A dismissed question
+      // raises no PostToolUse (nor Stop, on an interrupt), and nothing else would. Sent after
+      // the ask itself has landed, so the clear never arrives ahead of the row it clears.
+      try {
+        return await terminal
+      } finally {
+        await posted
+        await deliver($, 'denied', async () => ({ hook_event_name: 'AskUserQuestion', ...(await where()) }), {
+          launch: false,
+        })
+      }
+    }
+    // The menu bar answered first; AgentBar cleared the row when it took the answer.
     return { result: { questions: tool_input.questions, answers: first.answers } } as never
+  })
+
+  // An interrupted turn (Esc, or a prompt dismissed) raises no Stop, so a prompt still shown
+  // for this session would linger until the next one. Clear it here. Subagents' turns are
+  // left alone: the session's own turn decides.
+  on('turn.complete', ($, e, next) => {
+    if (e.isAborted && !e.agentId) {
+      void deliver(
+        $,
+        'denied',
+        async () => ({ hook_event_name: 'TurnAborted', session_id: await $.session.id(), cwd: await $.session.cwd() }),
+        { launch: false },
+      )
+    }
+    return next(e)
   })
 
   // The band.
@@ -296,10 +323,11 @@ async function offer(
   body: object | (() => Promise<object>),
   signal: AbortSignal,
   settled: () => boolean = () => false,
+  offered: () => void = () => {},
 ): Promise<Answer | undefined> {
   // No launching here: the launch wait sleeps, and sleeps count against the hook's budget.
   const target = await connect($, { launch: false })
-  if (!target) return forward($, endpoint, body), undefined
+  if (!target) return offered(), forward($, endpoint, body), undefined
 
   const id = answerId()
   const base = `http://127.0.0.1:${target.port}`
@@ -307,12 +335,14 @@ async function offer(
   let open = false
   try {
     const payload = typeof body === 'function' ? await body() : body
-    const offered = await $.http.fetch(`${base}/v1/${endpoint}`, {
-      method: 'POST',
-      headers: { ...(await headers($)), ...auth, 'X-AgentBar-Answer-Id': id },
-      body: JSON.stringify(payload),
-    })
-    open = offered.ok && parse(offered.text)?.answerable === true
+    const posted = await $.http
+      .fetch(`${base}/v1/${endpoint}`, {
+        method: 'POST',
+        headers: { ...(await headers($)), ...auth, 'X-AgentBar-Answer-Id': id },
+        body: JSON.stringify(payload),
+      })
+      .finally(offered)
+    open = posted.ok && parse(posted.text)?.answerable === true
     if (!open) return undefined
 
     const deadline = (await $.clock.now()) + MAX_WAIT_MS
@@ -327,6 +357,7 @@ async function offer(
   } catch {
     return undefined
   } finally {
+    offered()
     // Stopped waiting with the question still open: tell AgentBar to drop the buttons so
     // the row goes back to notify-only.
     if (open) {
@@ -369,20 +400,32 @@ function answerId(): string {
  * rejects: every failure is swallowed (fail-open).
  */
 function forward($: $, endpoint: string, body: object | (() => Promise<object>)): void {
-  void (async () => {
-    try {
-      const target = await connect($, { launch: true })
-      if (!target) return
-      const payload = typeof body === 'function' ? await body() : body
-      await $.http.fetch(`http://127.0.0.1:${target.port}/v1/${endpoint}`, {
-        method: 'POST',
-        headers: { ...(await headers($)), Authorization: `Bearer ${target.token}` },
-        body: JSON.stringify(payload),
-      })
-    } catch {
-      // Fail open.
-    }
-  })()
+  void deliver($, endpoint, body, { launch: true })
+}
+
+/**
+ * Posts one event to AgentBar and resolves once it is delivered or dropped. Never rejects
+ * (fail-open). Without `launch`, a missing app just drops it: for clears, which have no row
+ * to clear when AgentBar is not running.
+ */
+async function deliver(
+  $: $,
+  endpoint: string,
+  body: object | (() => Promise<object>),
+  { launch }: { launch: boolean },
+): Promise<void> {
+  try {
+    const target = await connect($, { launch })
+    if (!target) return
+    const payload = typeof body === 'function' ? await body() : body
+    await $.http.fetch(`http://127.0.0.1:${target.port}/v1/${endpoint}`, {
+      method: 'POST',
+      headers: { ...(await headers($)), Authorization: `Bearer ${target.token}` },
+      body: JSON.stringify(payload),
+    })
+  } catch {
+    // Fail open.
+  }
 }
 
 /**
