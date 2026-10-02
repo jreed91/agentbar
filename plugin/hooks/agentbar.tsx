@@ -1,14 +1,8 @@
 // AgentBar's Claude Code bridge, as a Claude Code mod.
 //
-// Most hooks here observe and forward: they hand the event to AgentBar's local HTTP server
-// and pass it on with `next(e)` unchanged.
-//
-// Two hooks can also take an answer from the menu bar, when "Answer prompts from the menu
-// bar" is turned on in AgentBar's Settings (it is off by default): a permission request
-// (allow or deny) and an AskUserQuestion (pick the options). The prompt still opens in the
-// terminal at the same time; whichever you answer first wins and the other one closes.
-// With the setting off, AgentBar replies that it won't answer and the hook steps aside at
-// once, so the session behaves exactly as a notify-only bridge would.
+// Every hook here observes and forwards: it hands the event to AgentBar's local HTTP server
+// and passes it on with `next(e)` unchanged. The mod never answers a prompt; you answer in
+// the terminal, and Claude Code's own permission rules decide.
 //
 // Fail-open contract: if AgentBar is missing, unreachable or errors in any way, the event is
 // dropped silently and the prompt is answered in the terminal, exactly as if AgentBar were
@@ -59,18 +53,6 @@ const clockSeconds = atom({ plugin: 'agentbar', key: 'now' } as const, 0)
 
 type Server = { port: number; token: string }
 
-/** What AgentBar answered from the menu bar. */
-type Answer =
-  | { behavior: 'allow' }
-  | { behavior: 'deny'; message?: string }
-  | { answers: Record<string, string> }
-
-/** How long one answer poll may be held open by the app before it replies "nothing yet". */
-const ANSWER_POLL_MS = 3000
-/** Upper bound on waiting for a menu-bar answer; the terminal prompt is open throughout. */
-const MAX_WAIT_MS = 30 * 60 * 1000
-const DENIED = 'Denied from the AgentBar menu bar.'
-
 // Cached across events; a reload starts it over, which only costs one re-read.
 let server: Server | undefined
 
@@ -79,23 +61,9 @@ export const register: Register = on => {
     forward($, 'working', e)
     return next(e)
   })
-  // Claude Code runs this hook while the permission dialog is already on screen and takes
-  // whichever answers first, so waiting here never holds up the terminal prompt.
-  on('classic.PermissionRequest', async ($, e, next) => {
-    const beneath = await next(e)
-    // A settings hook already decided, so no dialog opens and there is nothing to answer.
-    if (beneath.decision) {
-      forward($, 'permission', e)
-      return beneath
-    }
-    const answer = await offer($, 'permission', e, next.signal)
-    if (answer && 'behavior' in answer && answer.behavior === 'allow') {
-      return { ...beneath, decision: { behavior: 'allow' } }
-    }
-    if (answer && 'behavior' in answer && answer.behavior === 'deny') {
-      return { ...beneath, decision: { behavior: 'deny', message: answer.message || DENIED } }
-    }
-    return beneath
+  on('classic.PermissionRequest', ($, e, next) => {
+    forward($, 'permission', e)
+    return next(e)
   })
   on('classic.PermissionDenied', ($, e, next) => {
     forward($, 'denied', e)
@@ -134,52 +102,18 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // AskUserQuestion: offer it to AgentBar while `next` shows it in the terminal (`next`
-  // resolves only once it is answered there). An answer from the menu bar returns first,
-  // which closes the terminal dialog. The body mirrors the old PreToolUse hook input.
+  // AskUserQuestion: tell AgentBar about it while `next` shows it in the terminal (`next`
+  // resolves only once it is settled there), then tell AgentBar to clear its row. Answered,
+  // refused, dismissed or interrupted, the question is over either way, and a dismissed
+  // question raises no PostToolUse (nor Stop, on an interrupt), so nothing else would clear
+  // it. The ask's body mirrors the old PreToolUse hook input.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    // The envelope's reserved fields aside, `e` is the tool's input.
-    const { tool, tool_use_id: _id, ...tool_input } = e
-    const where = async () => ({ session_id: await $.session.id(), cwd: await $.session.cwd() })
-    let settled = false
-    let offered = () => {}
-    const posted = new Promise<void>(resolve => (offered = resolve))
-    const terminal = next(e)
-    terminal.then(
-      () => (settled = true),
-      () => (settled = true),
-    )
-    const menuBar = offer(
-      $,
-      'ask',
-      async () => ({ hook_event_name: 'PreToolUse', ...(await where()), tool_name: tool, tool_input }),
-      next.signal,
-      () => settled,
-      offered,
-    )
-    const first = await Promise.race([
-      terminal.then(
-        () => undefined,
-        () => undefined,
-      ),
-      menuBar.then(answer => (answer && 'answers' in answer ? answer : undefined)),
-    ])
-    if (!first || settled) {
-      // Answered, refused or dismissed in the terminal, or the turn was interrupted: the
-      // question is over either way, so tell AgentBar to clear its row. A dismissed question
-      // raises no PostToolUse (nor Stop, on an interrupt), and nothing else would. Sent after
-      // the ask itself has landed, so the clear never arrives ahead of the row it clears.
-      try {
-        return await terminal
-      } finally {
-        await posted
-        await deliver($, 'denied', async () => ({ hook_event_name: 'AskUserQuestion', ...(await where()) }), {
-          launch: false,
-        })
-      }
+    const asked = askQuestion($, e)
+    try {
+      return await next(e)
+    } finally {
+      await clearQuestion($, asked)
     }
-    // The menu bar answered first; AgentBar cleared the row when it took the answer.
-    return { result: { questions: tool_input.questions, answers: first.answers } } as never
   })
 
   // An interrupted turn (Esc, or a prompt dismissed) raises no Stop, so a prompt still shown
@@ -343,96 +277,36 @@ async function jump($: Engine, sessionID: string): Promise<void> {
   }
 }
 
+/** Posts an AskUserQuestion to AgentBar as the old PreToolUse hook input. Never rejects. */
+function askQuestion($: Engine, e: { tool: string; tool_use_id?: string }): Promise<void> {
+  // The envelope's reserved fields aside, `e` is the tool's input.
+  const { tool, tool_use_id: _id, ...tool_input } = e
+  return deliver(
+    $,
+    'ask',
+    async () => ({
+      hook_event_name: 'PreToolUse',
+      session_id: await $.session.id(),
+      cwd: await $.session.cwd(),
+      tool_name: tool,
+      tool_input,
+    }),
+    { launch: true },
+  )
+}
+
 /**
- * Posts an answerable prompt to AgentBar and waits for an answer from the menu bar.
- * Resolves `undefined` when there is none to take: AgentBar is down (the event is then
- * forwarded the usual way, which launches it), answering is turned off, the prompt was
- * answered in the terminal or cleared, or the dispatch ended. Never throws.
+ * Tells AgentBar a question is over, once its ask has landed so the clear never arrives
+ * ahead of the row it clears. Never launches AgentBar and never rejects.
  */
-async function offer(
-  $: Engine,
-  endpoint: string,
-  body: object | (() => Promise<object>),
-  signal: AbortSignal,
-  settled: () => boolean = () => false,
-  offered: () => void = () => {},
-): Promise<Answer | undefined> {
-  // No launching here: the launch wait sleeps, and sleeps count against the hook's budget.
-  const target = await connect($, { launch: false })
-  if (!target) {
-    offered()
-    forward($, endpoint, body)
-    return undefined
-  }
-
-  const id = answerId()
-  const base = `http://127.0.0.1:${target.port}`
-  const auth = { Authorization: `Bearer ${target.token}` }
-  let open = false
-  try {
-    const payload = typeof body === 'function' ? await body() : body
-    const request = {
-      method: 'POST',
-      headers: { ...(await headers($)), ...auth, 'X-AgentBar-Answer-Id': id },
-      body: JSON.stringify(payload),
-    }
-    let posted
-    try {
-      posted = await $.http.fetch(`${base}/v1/${endpoint}`, request)
-    } finally {
-      offered()
-    }
-    open = posted.ok && parse(posted.text)?.answerable === true
-    if (!open) return undefined
-
-    const deadline = (await $.clock.now()) + MAX_WAIT_MS
-    while (!signal.aborted && !settled() && (await $.clock.now()) < deadline) {
-      const polled = await $.http.fetch(`${base}/v1/answer/${id}?wait=${ANSWER_POLL_MS}`, { headers: auth })
-      if (polled.status === 204) continue
-      // 410: answered in the terminal, dismissed or superseded. Anything else: give up.
-      open = false
-      return polled.status === 200 ? toAnswer(parse(polled.text)) : undefined
-    }
-    return undefined
-  } catch {
-    return undefined
-  } finally {
-    offered()
-    // Stopped waiting with the question still open: tell AgentBar to drop the buttons so
-    // the row goes back to notify-only.
-    if (open) {
-      void $.http.fetch(`${base}/v1/answer/${id}`, { method: 'DELETE', headers: auth }).catch(() => {})
-    }
-  }
-}
-
-function toAnswer(raw: Record<string, unknown> | undefined): Answer | undefined {
-  if (raw?.behavior === 'allow') return { behavior: 'allow' }
-  if (raw?.behavior === 'deny') {
-    return { behavior: 'deny', message: typeof raw.message === 'string' ? raw.message : undefined }
-  }
-  const answers = raw?.answers
-  if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
-    const picked = Object.entries(answers).filter(([, v]) => typeof v === 'string')
-    if (picked.length > 0) return { answers: Object.fromEntries(picked) as Record<string, string> }
-  }
-  return undefined
-}
-
-function parse(text: string): Record<string, unknown> | undefined {
-  try {
-    const value: unknown = JSON.parse(text)
-    return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** A fresh id tying one prompt to its answer; not a secret (the bearer token guards it). */
-function answerId(): string {
-  let id = ''
-  for (let i = 0; i < 24; i++) id += Math.floor(Math.random() * 16).toString(16)
-  return id
+async function clearQuestion($: Engine, asked: Promise<void>): Promise<void> {
+  await asked
+  await deliver(
+    $,
+    'denied',
+    async () => ({ hook_event_name: 'AskUserQuestion', session_id: await $.session.id(), cwd: await $.session.cwd() }),
+    { launch: false },
+  )
 }
 
 /**
