@@ -29,7 +29,7 @@
 // does.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface as $, Register } from 'claude-code'
+import type { EngineInterface as Engine, Register } from 'claude-code'
 
 import type { AgentBarWaiting } from '../types'
 
@@ -75,32 +75,64 @@ const DENIED = 'Denied from the AgentBar menu bar.'
 let server: Server | undefined
 
 export const register: Register = on => {
-  on('classic.UserPromptSubmit', ($, e, next) => (forward($, 'working', e), next(e)))
+  on('classic.UserPromptSubmit', ($, e, next) => {
+    forward($, 'working', e)
+    return next(e)
+  })
   // Claude Code runs this hook while the permission dialog is already on screen and takes
   // whichever answers first, so waiting here never holds up the terminal prompt.
   on('classic.PermissionRequest', async ($, e, next) => {
     const beneath = await next(e)
     // A settings hook already decided, so no dialog opens and there is nothing to answer.
-    if (beneath.decision) return (forward($, 'permission', e), beneath)
+    if (beneath.decision) {
+      forward($, 'permission', e)
+      return beneath
+    }
     const answer = await offer($, 'permission', e, next.signal)
-    if (answer && 'behavior' in answer) {
-      const decision =
-        answer.behavior === 'allow'
-          ? ({ behavior: 'allow' } as const)
-          : ({ behavior: 'deny', message: answer.message || DENIED } as const)
-      return { ...beneath, decision }
+    if (answer && 'behavior' in answer && answer.behavior === 'allow') {
+      return { ...beneath, decision: { behavior: 'allow' } }
+    }
+    if (answer && 'behavior' in answer && answer.behavior === 'deny') {
+      return { ...beneath, decision: { behavior: 'deny', message: answer.message || DENIED } }
     }
     return beneath
   })
-  on('classic.PermissionDenied', ($, e, next) => (forward($, 'denied', e), next(e)))
-  on('classic.PostToolUse', ($, e, next) => (forward($, 'resolved', e), next(e)))
-  on('classic.PostToolUseFailure', ($, e, next) => (forward($, 'resolved', e), next(e)))
-  on('classic.Elicitation', ($, e, next) => (forward($, 'elicit', e), next(e)))
-  on('classic.Notification', ($, e, next) => (forward($, 'notify', e), next(e)))
-  on('classic.Stop', ($, e, next) => (forward($, 'stop', e), next(e)))
-  on('classic.SubagentStop', ($, e, next) => (forward($, 'subagent', e), next(e)))
-  on('classic.SessionEnd', ($, e, next) => (forward($, 'sessionend', e), next(e)))
-  on('classic.StopFailure', ($, e, next) => (forward($, 'stopfailure', e), next(e)))
+  on('classic.PermissionDenied', ($, e, next) => {
+    forward($, 'denied', e)
+    return next(e)
+  })
+  on('classic.PostToolUse', ($, e, next) => {
+    forward($, 'resolved', e)
+    return next(e)
+  })
+  on('classic.PostToolUseFailure', ($, e, next) => {
+    forward($, 'resolved', e)
+    return next(e)
+  })
+  on('classic.Elicitation', ($, e, next) => {
+    forward($, 'elicit', e)
+    return next(e)
+  })
+  on('classic.Notification', ($, e, next) => {
+    forward($, 'notify', e)
+    return next(e)
+  })
+  on('classic.Stop', ($, e, next) => {
+    forward($, 'stop', e)
+    return next(e)
+  })
+  on('classic.SubagentStop', ($, e, next) => {
+    forward($, 'subagent', e)
+    return next(e)
+  })
+  on('classic.SessionEnd', ($, e, next) => {
+    forward($, 'sessionend', e)
+    return next(e)
+  })
+  on('classic.StopFailure', ($, e, next) => {
+    forward($, 'stopfailure', e)
+    return next(e)
+  })
 
   // AskUserQuestion: offer it to AgentBar while `next` shows it in the terminal (`next`
   // resolves only once it is answered there). An answer from the menu bar returns first,
@@ -259,7 +291,7 @@ function project(cwd: string): string {
  * Asks AgentBar who is waiting and keeps everyone but this session. Fail-open: when the app
  * is down or answers oddly, the band empties rather than showing stale sessions.
  */
-async function poll($: $): Promise<void> {
+async function poll($: Engine): Promise<void> {
   const attention = await safe(() => fetchAttention($))
   const self = await safe(() => $.session.id())
   const others = (attention?.sessions ?? []).filter(entry => entry.session_id !== self)
@@ -285,7 +317,7 @@ function ages(entries: AgentBarWaiting[], now: number): string {
   return entries.map(entry => (now ? ago(now - entry.waiting_since) : '')).join(',')
 }
 
-async function fetchAttention($: $): Promise<Attention | undefined> {
+async function fetchAttention($: Engine): Promise<Attention | undefined> {
   const target = await connect($, { launch: false })
   if (!target) return undefined
   const response = await $.http.fetch(`http://127.0.0.1:${target.port}/v1/attention`, {
@@ -297,7 +329,7 @@ async function fetchAttention($: $): Promise<Attention | undefined> {
 }
 
 /** Asks AgentBar to bring that session's terminal forward. Fail-open. */
-async function jump($: $, sessionID: string): Promise<void> {
+async function jump($: Engine, sessionID: string): Promise<void> {
   try {
     const target = await connect($, { launch: false })
     if (!target) return
@@ -318,7 +350,7 @@ async function jump($: $, sessionID: string): Promise<void> {
  * answered in the terminal or cleared, or the dispatch ended. Never throws.
  */
 async function offer(
-  $: $,
+  $: Engine,
   endpoint: string,
   body: object | (() => Promise<object>),
   signal: AbortSignal,
@@ -327,7 +359,11 @@ async function offer(
 ): Promise<Answer | undefined> {
   // No launching here: the launch wait sleeps, and sleeps count against the hook's budget.
   const target = await connect($, { launch: false })
-  if (!target) return offered(), forward($, endpoint, body), undefined
+  if (!target) {
+    offered()
+    forward($, endpoint, body)
+    return undefined
+  }
 
   const id = answerId()
   const base = `http://127.0.0.1:${target.port}`
@@ -335,13 +371,17 @@ async function offer(
   let open = false
   try {
     const payload = typeof body === 'function' ? await body() : body
-    const posted = await $.http
-      .fetch(`${base}/v1/${endpoint}`, {
-        method: 'POST',
-        headers: { ...(await headers($)), ...auth, 'X-AgentBar-Answer-Id': id },
-        body: JSON.stringify(payload),
-      })
-      .finally(offered)
+    const request = {
+      method: 'POST',
+      headers: { ...(await headers($)), ...auth, 'X-AgentBar-Answer-Id': id },
+      body: JSON.stringify(payload),
+    }
+    let posted
+    try {
+      posted = await $.http.fetch(`${base}/v1/${endpoint}`, request)
+    } finally {
+      offered()
+    }
     open = posted.ok && parse(posted.text)?.answerable === true
     if (!open) return undefined
 
@@ -399,7 +439,7 @@ function answerId(): string {
  * Posts one event to AgentBar without holding up the session. Never throws and never
  * rejects: every failure is swallowed (fail-open).
  */
-function forward($: $, endpoint: string, body: object | (() => Promise<object>)): void {
+function forward($: Engine, endpoint: string, body: object | (() => Promise<object>)): void {
   void deliver($, endpoint, body, { launch: true })
 }
 
@@ -409,7 +449,7 @@ function forward($: $, endpoint: string, body: object | (() => Promise<object>))
  * to clear when AgentBar is not running.
  */
 async function deliver(
-  $: $,
+  $: Engine,
   endpoint: string,
   body: object | (() => Promise<object>),
   { launch }: { launch: boolean },
@@ -433,7 +473,7 @@ async function deliver(
  * bridge's events); without it, a missing app is just undefined (the band's polls, which
  * must never start the app on their own).
  */
-async function connect($: $, { launch }: { launch: boolean }): Promise<Server | undefined> {
+async function connect($: Engine, { launch }: { launch: boolean }): Promise<Server | undefined> {
   if (server && (await alive($, server))) return server
   server = await readServerFile($)
   if (server && (await alive($, server))) return server
@@ -457,7 +497,7 @@ async function connect($: $, { launch }: { launch: boolean }): Promise<Server | 
   return undefined
 }
 
-async function readServerFile($: $): Promise<Server | undefined> {
+async function readServerFile($: Engine): Promise<Server | undefined> {
   try {
     const home = await $.env.get('HOME')
     if (!home) return undefined
@@ -470,7 +510,7 @@ async function readServerFile($: $): Promise<Server | undefined> {
   }
 }
 
-async function alive($: $, target: Server): Promise<boolean> {
+async function alive($: Engine, target: Server): Promise<boolean> {
   try {
     const health = await $.http.fetch(`http://127.0.0.1:${target.port}/v1/health`, {
       headers: { Authorization: `Bearer ${target.token}` },
@@ -486,7 +526,7 @@ async function alive($: $, target: Server): Promise<boolean> {
  * kind for the Setup panel, and the session's model and context fill for the row's meta
  * line. Each is best-effort and left out when unknown.
  */
-async function headers($: $): Promise<Record<string, string>> {
+async function headers($: Engine): Promise<Record<string, string>> {
   const out: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-AgentBar-Agent': 'claude',
@@ -507,9 +547,9 @@ async function headers($: $): Promise<Record<string, string>> {
   return out
 }
 
-async function safe<T>(read: () => Promise<T>): Promise<T | undefined> {
+async function safe<T>(get: () => Promise<T>): Promise<T | undefined> {
   try {
-    return await read()
+    return await get()
   } catch {
     return undefined
   }
