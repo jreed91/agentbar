@@ -320,9 +320,12 @@ Repository layout:
 ```
 agentbar/
 ├── .claude-plugin/marketplace.json    # plugin marketplace (repo root)
+├── LICENSE                          # MIT
 ├── docs/implementation-plan.md        # full design & decisions
 ├── plugin/                            # the Claude Code plugin ("agentbar"), a Claude Code mod
 │   ├── .claude-plugin/plugin.json
+│   ├── .claude-plugin/icon.png        # the plugin's listing icon
+│   ├── README.md                      # what the mod's hooks do, what it sends where, what it runs
 │   ├── hooks/hooks.json               # names the mod's module
 │   ├── hooks/agentbar.tsx             # the in-terminal band, and observes UserPromptSubmit / AskUserQuestion / PermissionRequest / PermissionDenied / PostToolUse / PostToolUseFailure / Elicitation / Notification / Stop / SubagentStop / SessionEnd / StopFailure
 │   ├── types/index.d.ts               # the band's $.state contract
