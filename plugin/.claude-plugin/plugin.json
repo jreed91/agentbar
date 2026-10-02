@@ -1,7 +1,7 @@
 {
   "name": "agentbar",
   "description": "Get notified when Claude Code needs you — questions, permission prompts, and idle sessions surface in the AgentBar macOS menu bar app, and you answer in your terminal. A band above the prompt shows when your other sessions need you. A Claude Code mod: loads automatically, no configuration needed. Requires Claude Code 2.1.287 or newer.",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "author": {
     "name": "jreed91"
   },
